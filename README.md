@@ -57,6 +57,46 @@ The flake supports Apple Silicon and Intel macOS and Linux. It also exports
 NixOS, nix-darwin, and Home Manager modules that install the package. They do not
 configure your Tailscale account or grant operator permissions.
 
+### Add to a Nix configuration
+
+Add Poros to your flake inputs:
+
+```nix
+inputs.poros = {
+  url = "github:gildrb/poros";
+  inputs.nixpkgs.follows = "nixpkgs";
+};
+```
+
+Include `poros` in your flake's `outputs` arguments. Then add the matching module
+to the configuration's `modules` list:
+
+```nix
+# nixpkgs.lib.nixosSystem
+modules = [ poros.nixosModules.default ];
+
+# nix-darwin.lib.darwinSystem
+modules = [ poros.darwinModules.default ];
+
+# home-manager.lib.homeManagerConfiguration
+modules = [ poros.homeManagerModules.default ];
+```
+
+Alternatively, select the package directly in a module that receives `pkgs`:
+
+```nix
+# NixOS or nix-darwin
+environment.systemPackages = [
+  poros.packages.${pkgs.stdenv.hostPlatform.system}.default
+];
+
+# Home Manager: use home.packages instead of environment.systemPackages.
+```
+
+Use either the install module or the package list; you do not need both. The
+flake also exports `poros.overlays.default` for configurations that prefer
+`pkgs.poros`.
+
 ## Build locally
 
 ```sh
