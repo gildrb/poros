@@ -1,4 +1,4 @@
-package taildev
+package poros
 
 import (
 	"bufio"
@@ -32,8 +32,8 @@ func TestProxyRewritesHostAndOrigin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	node := tailnetNode{dnsName: "workstation.example.ts.net", ip: net.ParseIP("100.100.100.100")}
-	proxy := httptest.NewServer(newProxy(target, node, log.New(io.Discard, "", 0)))
+	authority := "workstation.example.ts.net:5173"
+	proxy := httptest.NewServer(newProxy(target, authority, log.New(io.Discard, "", 0)))
 	defer proxy.Close()
 
 	request, err := http.NewRequest(http.MethodGet, proxy.URL, nil)
@@ -41,7 +41,7 @@ func TestProxyRewritesHostAndOrigin(t *testing.T) {
 		t.Fatal(err)
 	}
 	request.Host = "workstation.example.ts.net:5173"
-	request.Header.Set("Origin", "http://workstation.example.ts.net:5173")
+	request.Header.Set("Origin", "https://workstation.example.ts.net:5173")
 	response, err := http.DefaultClient.Do(request)
 	if err != nil {
 		t.Fatal(err)
@@ -54,11 +54,11 @@ func TestProxyRewritesHostAndOrigin(t *testing.T) {
 
 func TestProxyRejectsOtherHosts(t *testing.T) {
 	target, _ := url.Parse("http://127.0.0.1:3000")
-	node := tailnetNode{dnsName: "workstation.example.ts.net", ip: net.ParseIP("100.100.100.100")}
+	authority := "workstation.example.ts.net:5173"
 	request := httptest.NewRequest(http.MethodGet, "http://attacker.example/", nil)
 	response := httptest.NewRecorder()
 
-	newProxy(target, node, log.New(io.Discard, "", 0)).ServeHTTP(response, request)
+	newProxy(target, authority, log.New(io.Discard, "", 0)).ServeHTTP(response, request)
 	if response.Code != http.StatusForbidden {
 		t.Fatalf("unexpected status: %d", response.Code)
 	}
@@ -71,12 +71,12 @@ func TestProxyRejectsForeignOrigin(t *testing.T) {
 	}))
 	defer backend.Close()
 	target, _ := url.Parse(backend.URL)
-	node := tailnetNode{dnsName: "workstation.example.ts.net", ip: net.ParseIP("100.100.100.100")}
-	request := httptest.NewRequest(http.MethodPost, "http://workstation.example.ts.net:5173/save", nil)
+	authority := "workstation.example.ts.net:5173"
+	request := httptest.NewRequest(http.MethodPost, "https://workstation.example.ts.net:5173/save", nil)
 	request.Header.Set("Origin", "https://malicious.example")
 	response := httptest.NewRecorder()
 
-	newProxy(target, node, log.New(io.Discard, "", 0)).ServeHTTP(response, request)
+	newProxy(target, authority, log.New(io.Discard, "", 0)).ServeHTTP(response, request)
 	if response.Code != http.StatusForbidden {
 		t.Fatalf("unexpected status: %d", response.Code)
 	}
@@ -94,8 +94,8 @@ func TestProxyRewritesBackendRedirect(t *testing.T) {
 	defer backend.Close()
 	backendURL = backend.URL
 	target, _ := url.Parse(backend.URL)
-	node := tailnetNode{dnsName: "workstation.example.ts.net", ip: net.ParseIP("100.100.100.100")}
-	proxy := httptest.NewServer(newProxy(target, node, log.New(io.Discard, "", 0)))
+	authority := "workstation.example.ts.net:5173"
+	proxy := httptest.NewServer(newProxy(target, authority, log.New(io.Discard, "", 0)))
 	defer proxy.Close()
 
 	client := *http.DefaultClient
@@ -107,7 +107,7 @@ func TestProxyRewritesBackendRedirect(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer response.Body.Close()
-	if location := response.Header.Get("Location"); location != "http://workstation.example.ts.net:5173/login" {
+	if location := response.Header.Get("Location"); location != "https://workstation.example.ts.net:5173/login" {
 		t.Fatalf("unexpected redirect Location: %q", location)
 	}
 }
@@ -133,8 +133,8 @@ func TestProxyForwardsWebSocketAndRewritesOrigin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	node := tailnetNode{dnsName: "workstation.example.ts.net", ip: net.ParseIP("100.100.100.100")}
-	proxy := httptest.NewServer(newProxy(target, node, log.New(io.Discard, "", 0)))
+	authority := "workstation.example.ts.net:5173"
+	proxy := httptest.NewServer(newProxy(target, authority, log.New(io.Discard, "", 0)))
 	defer proxy.Close()
 	proxyURL, err := url.Parse(proxy.URL)
 	if err != nil {
@@ -146,7 +146,8 @@ func TestProxyForwardsWebSocketAndRewritesOrigin(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer connection.Close()
-	fmt.Fprint(connection, "GET /_bun/hmr HTTP/1.1\r\nHost: workstation.example.ts.net:5173\r\nOrigin: http://workstation.example.ts.net:5173\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: test-only\r\n\r\n")
+	_ = connection.SetDeadline(time.Now().Add(2 * time.Second))
+	fmt.Fprint(connection, "GET /_bun/hmr HTTP/1.1\r\nHost: workstation.example.ts.net:5173\r\nOrigin: https://workstation.example.ts.net:5173\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: test-only\r\n\r\n")
 
 	request := &http.Request{Method: http.MethodGet}
 	response, err := http.ReadResponse(bufio.NewReader(connection), request)
@@ -170,15 +171,51 @@ func TestProxyForwardsWebSocketAndRewritesOrigin(t *testing.T) {
 
 func TestProxyRejectsForeignOriginWebSocket(t *testing.T) {
 	target, _ := url.Parse("http://127.0.0.1:3000")
-	node := tailnetNode{dnsName: "workstation.example.ts.net", ip: net.ParseIP("100.100.100.100")}
-	request := httptest.NewRequest(http.MethodGet, "http://workstation.example.ts.net:5173/socket", nil)
+	authority := "workstation.example.ts.net:5173"
+	request := httptest.NewRequest(http.MethodGet, "https://workstation.example.ts.net:5173/socket", nil)
 	request.Header.Set("Origin", "https://malicious.example")
 	request.Header.Set("Connection", "Upgrade")
 	request.Header.Set("Upgrade", "websocket")
 	response := httptest.NewRecorder()
 
-	newProxy(target, node, log.New(io.Discard, "", 0)).ServeHTTP(response, request)
+	newProxy(target, authority, log.New(io.Discard, "", 0)).ServeHTTP(response, request)
 	if response.Code != http.StatusForbidden {
 		t.Fatalf("unexpected status: %d", response.Code)
+	}
+}
+
+func TestProxyForwardsHTTPSAndHMRMetadata(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.RequestURI() != "/hmr?token=vite-secret" || r.Header.Get("Sec-WebSocket-Protocol") != "vite-hmr" {
+			t.Errorf("lost HMR metadata: %s %#v", r.URL, r.Header)
+		}
+		if r.Header.Get("X-Forwarded-Proto") != "https" || r.Header.Get("X-Forwarded-Host") != "node.ts.net:55000" {
+			t.Errorf("wrong forwarded headers: %#v", r.Header)
+		}
+		w.WriteHeader(204)
+	}))
+	defer backend.Close()
+	target, _ := url.Parse(backend.URL)
+	request := httptest.NewRequest("GET", "http://node.ts.net:55000/hmr?token=vite-secret", nil)
+	request.Header.Set("X-Forwarded-Proto", "http")
+	request.Header.Set("X-Forwarded-Host", "attacker.example")
+	request.Header.Set("Sec-WebSocket-Protocol", "vite-hmr")
+	recorder := httptest.NewRecorder()
+	newProxy(target, "node.ts.net:55000", log.New(io.Discard, "", 0)).ServeHTTP(recorder, request)
+	if recorder.Code != 204 {
+		t.Fatalf("status %d", recorder.Code)
+	}
+}
+
+func TestProxyRejectsOtherPortAndNonHTTPSOrigin(t *testing.T) {
+	target, _ := url.Parse("http://127.0.0.1:3000")
+	for _, pair := range [][2]string{{"node.ts.net:55001", ""}, {"node.ts.net:55000", "http://node.ts.net:55000"}, {"node.ts.net:55000", "null"}} {
+		request := httptest.NewRequest("GET", "http://"+pair[0]+"/", nil)
+		request.Header.Set("Origin", pair[1])
+		recorder := httptest.NewRecorder()
+		newProxy(target, "node.ts.net:55000", log.New(io.Discard, "", 0)).ServeHTTP(recorder, request)
+		if recorder.Code != 403 {
+			t.Fatalf("accepted %v: %d", pair, recorder.Code)
+		}
 	}
 }

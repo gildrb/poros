@@ -1,0 +1,13 @@
+{
+  "name": "poros-vite-smoke",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "test": "playwright test"
+  },
+  "devDependencies": {
+    "vite": "8.2.2",
+    "@playwright/test": "1.62.1"
+  }
+}

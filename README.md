@@ -1,88 +1,104 @@
-# taildev
+# Poros
 
-`taildev` gives a localhost development server a predictable, tailnet-only URL.
-It discovers the current machine through the local Tailscale client, binds only
-to that Tailscale address, and proxies HTTP and WebSocket traffic to localhost.
+Run a development command. Open its private HTTPS link on your Mac, phone, or tablet.
 
-No account tokens, tailnet names, IP addresses, certificates, or other state
-are stored by this project.
-
-## Run without installing
-
-Start a development command on the default port (`5173`):
-
-```bash
-nix run github:gildrb/taildev -- -- npm run dev -- --host {host} --port {port}
+```sh
+poros bun run dev
 ```
 
-Or choose a port:
+Run this in your project on the machine doing the development work. Open the
+printed link on any device connected to your tailnet and permitted by its access
+rules. Your browser stays local; your code, builds, and development server stay
+on the development machine.
 
-```bash
-nix run github:gildrb/taildev -- --port 3000 -- python -m http.server {port} --bind {host}
+Bun + Vite is the first supported workflow. Vite needs no Poros plugin or port
+placeholders. Poros discovers the command's loopback listener, including Vite's
+next available port, and forwards HTTP and hot-reload WebSockets.
+
+## Requirements
+
+- Tailscale installed, signed in, and running on the development machine and
+  viewing device.
+- MagicDNS and HTTPS certificates enabled for the tailnet. Tailscale may require
+  one-time administrator setup. Certificate names are recorded in public
+  Certificate Transparency logs; the development site itself remains private.
+- Tailnet access rules that allow the selected HTTPS port.
+- The project's usual tools and dependencies installed on the development machine.
+
+On Linux, an administrator may need to allow your user to configure Tailscale
+once:
+
+```sh
+sudo tailscale set --operator="$USER"
 ```
 
-`taildev` prints a URL like:
+This grants your account Tailscale operator access, not just permission to run
+Poros. Poros does not grant this permission itself or run your application as root.
 
-```text
-Tailnet URL: http://workstation.example.ts.net:5173/
-Local target: http://127.0.0.1:43123
+Edit the files on that machine, using your remote editor or terminal. Changes in
+an independent checkout on your Mac are not synchronized by Poros.
+
+## Install
+
+With Nix installed:
+
+```sh
+nix profile install github:gildrb/poros
+poros bun run dev
 ```
 
-The child command receives `PORT`, `HOST`, `TAILDEV_TARGET_HOST`, and
-`TAILDEV_URL`. A fresh backend port is selected automatically, keeping the
-Tailnet-facing port stable and avoiding bind conflicts. Commands can use
-`{host}`, `{port}`, and `{url}` placeholders when their server does not read
-those environment variables. The proxy supports hot-reload WebSockets.
-Wrapped commands run non-interactively so their complete process group can be
-stopped reliably; use the `taildev` terminal for Ctrl-C, not framework keyboard
-shortcuts.
+Or run without installing:
 
-To expose a server that is already running:
-
-```bash
-taildev --port 5173 --target http://127.0.0.1:5173
+```sh
+nix run github:gildrb/poros -- bun run dev
 ```
 
-Use a different local target when its port differs from the tailnet port:
+The flake supports Apple Silicon and Intel macOS and Linux. It also exports
+NixOS, nix-darwin, and Home Manager modules that install the package. They do not
+configure your Tailscale account or grant operator permissions.
 
-```bash
-taildev --port 8080 --target http://127.0.0.1:3000
+## Build locally
+
+```sh
+nix build
+./result/bin/poros bun run dev
 ```
 
-## Install with Nix
+Or, with Go and the process inspection tools available:
 
-The flake provides packages for Apple Silicon and Intel macOS and Linux, plus
-an overlay and modules for NixOS, nix-darwin, and Home Manager.
-
-```nix
-{
-  inputs.taildev = {
-    url = "github:gildrb/taildev";
-    inputs.nixpkgs.follows = "nixpkgs";
-  };
-
-  outputs = { self, nixpkgs, taildev, ... }: {
-    nixosConfigurations.my-host = nixpkgs.lib.nixosSystem {
-      modules = [ taildev.nixosModules.default ];
-    };
-  };
-}
+```sh
+go install ./cmd/poros
+poros bun run dev
 ```
 
-For nix-darwin use `taildev.darwinModules.default`; for Home Manager use
-`taildev.homeManagerModules.default`. Overlay users can import
-`taildev.overlays.default` and install `pkgs.taildev`.
+The Nix package includes its process-inspection dependencies. Tailscale remains
+an independently installed, authenticated host service.
 
-## Requirements and security
+## Lifetime and security
 
-- Tailscale must be installed, signed in, and running locally.
-- MagicDNS is used when available; otherwise the Tailscale IP is printed.
-- The proxy listens only on the current machine's Tailscale address.
-- Requests with a `Host` outside the current node's MagicDNS name, short name,
-  or Tailscale IP are rejected.
-- Browser requests with a foreign `Origin` are rejected. Accepted origins and
-  local absolute redirects are translated across the proxy boundary.
-- HTTP is encrypted in transit by Tailscale/WireGuard, but browsers do not
-  treat a remote HTTP origin as a secure context. Use an SSH local forward or
-  Tailscale Serve when WebGPU, microphone, or another secure-context API is
-  required.
+Poros uses a foreground Tailscale Serve session, never Funnel. The development
+server and Poros bridge listen on loopback. Only Tailscale exposes the HTTPS
+endpoint, under your existing tailnet access rules. Poros does not open a LAN
+listener, modify firewall rules, or publish the site to the internet.
+
+Each invocation owns a separate HTTPS port. Existing Serve routes are not
+replaced. Normal command exit or Ctrl-C stops the child processes and removes
+only that invocation's sharing session. Poros never runs `tailscale serve reset`.
+
+Run Poros inside a persistent server terminal if it should survive your SSH
+session disconnecting. Poros is not a daemon or process-session manager. A hard
+kill of Poros can leave its child processes alive; do not treat it as a sandbox.
+Commands that detach into separate process groups are not supported.
+
+Browser Host and Origin checks protect the proxy boundary. Keep application
+secrets out of frontend bundles: private network access does not make browser
+code secret from authorized viewers.
+
+## Validation
+
+```sh
+go test ./...
+```
+
+The `tests/e2e` fixture exercises real Bun + Vite through a private HTTPS URL.
+See its README for the cross-machine browser test.

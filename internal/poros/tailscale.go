@@ -1,6 +1,7 @@
-package taildev
+package poros
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"os/exec"
 	"runtime"
 	"strings"
+	"time"
 )
 
 type tailnetNode struct {
@@ -44,8 +46,10 @@ func findTailscaleCLI(explicit string) (string, error) {
 	return "", errors.New("Tailscale CLI not found; install Tailscale or set TAILSCALE_CLI")
 }
 
-func loadTailnetNode(cli string) (tailnetNode, error) {
-	command := exec.Command(cli, "status", "--json", "--peers=false")
+func loadTailnetNode(ctx context.Context, cli string) (tailnetNode, error) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	command := exec.CommandContext(ctx, cli, "status", "--json", "--peers=false")
 	output, err := command.Output()
 	if err != nil {
 		return tailnetNode{}, fmt.Errorf("read Tailscale status: %w", err)

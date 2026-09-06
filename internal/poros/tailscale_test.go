@@ -1,4 +1,4 @@
-package taildev
+package poros
 
 import "testing"
 

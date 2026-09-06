@@ -1,16 +1,14 @@
-package taildev
+package poros
 
 import (
-	"fmt"
 	"log"
-	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
 	"strings"
 )
 
-func newProxy(target *url.URL, node tailnetNode, stderr *log.Logger) http.Handler {
+func newProxy(target *url.URL, authority string, stderr *log.Logger) http.Handler {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.Proxy = nil
 	proxy := &httputil.ReverseProxy{
@@ -19,6 +17,8 @@ func newProxy(target *url.URL, node tailnetNode, stderr *log.Logger) http.Handle
 			request.SetURL(target)
 			request.Out.Host = target.Host
 			request.SetXForwarded()
+			request.Out.Header.Set("X-Forwarded-Proto", "https")
+			request.Out.Header.Set("X-Forwarded-Host", authority)
 			if request.Out.Header.Get("Origin") != "" {
 				request.Out.Header.Set("Origin", target.Scheme+"://"+target.Host)
 			}
@@ -43,27 +43,14 @@ func newProxy(target *url.URL, node tailnetNode, stderr *log.Logger) http.Handle
 		},
 	}
 
-	allowedHosts := map[string]bool{node.ip.String(): true}
-	if node.dnsName != "" {
-		allowedHosts[strings.ToLower(node.dnsName)] = true
-		if short, _, ok := strings.Cut(node.dnsName, "."); ok {
-			allowedHosts[strings.ToLower(short)] = true
-		}
-	}
-
 	return http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
-		host := request.Host
-		if parsedHost, _, err := net.SplitHostPort(request.Host); err == nil {
-			host = parsedHost
-		}
-		host = strings.ToLower(strings.Trim(host, "[]"))
-		if !allowedHosts[host] {
-			http.Error(response, "Host is not this Tailscale node", http.StatusForbidden)
+		if !strings.EqualFold(request.Host, authority) {
+			http.Error(response, "Host is not this Poros route", http.StatusForbidden)
 			return
 		}
 		if origin := request.Header.Get("Origin"); origin != "" {
 			parsedOrigin, err := url.Parse(origin)
-			if err != nil || !strings.EqualFold(parsedOrigin.Host, request.Host) {
+			if err != nil || parsedOrigin.Scheme != "https" || parsedOrigin.User != nil || parsedOrigin.Path != "" || parsedOrigin.RawQuery != "" || parsedOrigin.Fragment != "" || !strings.EqualFold(parsedOrigin.Host, authority) {
 				http.Error(response, "Origin does not match this Tailscale node", http.StatusForbidden)
 				return
 			}
@@ -73,13 +60,5 @@ func newProxy(target *url.URL, node tailnetNode, stderr *log.Logger) http.Handle
 }
 
 func newErrorLogger(output interface{ Write([]byte) (int, error) }) *log.Logger {
-	return log.New(output, "taildev: ", 0)
-}
-
-func publicURL(node tailnetNode, port int) string {
-	host := node.dnsName
-	if host == "" {
-		host = node.ip.String()
-	}
-	return fmt.Sprintf("http://%s/", net.JoinHostPort(host, fmt.Sprintf("%d", port)))
+	return log.New(output, "poros: ", 0)
 }

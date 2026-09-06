@@ -1,3 +1,3 @@
-module github.com/gildrb/taildev
+module github.com/gildrb/poros
 
 go 1.24

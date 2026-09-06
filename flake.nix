@@ -24,13 +24,13 @@
     {
       packages = forAllSystems (system: {
         default = packageFor system;
-        taildev = packageFor system;
+        poros = packageFor system;
       });
 
       apps = forAllSystems (system: {
         default = {
           type = "app";
-          program = "${self.packages.${system}.default}/bin/taildev";
+          program = "${self.packages.${system}.default}/bin/poros";
           meta.description = "Expose a localhost development server over Tailscale";
         };
       });
@@ -42,7 +42,7 @@
       formatter = forAllSystems (system: nixpkgs.legacyPackages.${system}.nixfmt-tree);
 
       overlays.default = final: _previous: {
-        taildev = final.callPackage ./nix/package.nix { inherit version; };
+        poros = final.callPackage ./nix/package.nix { inherit version; };
       };
 
       nixosModules.default =
