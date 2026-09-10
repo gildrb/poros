@@ -1,0 +1,7 @@
+packages:
+  - .
+overrides:
+  vite: npm:@voidzero-dev/vite-plus-core@0.3.1
+peerDependencyRules:
+  allowedVersions:
+    vite: 0.3.1

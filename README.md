@@ -3,7 +3,7 @@
 Run a development command. Open its private HTTPS link on your Mac, phone, or tablet.
 
 ```sh
-poros bun run dev
+poros vp dev
 ```
 
 Run this in your project on the machine doing the development work. Open the
@@ -11,9 +11,11 @@ printed link on any device connected to your tailnet and permitted by its access
 rules. Your browser stays local; your code, builds, and development server stay
 on the development machine.
 
-Bun + Vite is the first supported workflow. Vite needs no Poros plugin or port
-placeholders. Poros discovers the command's loopback listener, including Vite's
-next available port, and forwards HTTP and hot-reload WebSockets.
+Use `poros vp dev` for a [Vite+](https://viteplus.dev/guide/) project. Plain Vite
+commands such as `poros bun run dev` still work. Poros passes the command and
+arguments through unchanged; no framework adapter or port placeholder is needed.
+It discovers the command's loopback listener, including Vite's next available
+port, and forwards HTTP and hot-reload WebSockets.
 
 ## Requirements
 
@@ -24,6 +26,8 @@ next available port, and forwards HTTP and hot-reload WebSockets.
   Certificate Transparency logs; the development site itself remains private.
 - Tailnet access rules that allow the selected HTTPS port.
 - The project's usual tools and dependencies installed on the development machine.
+  For Vite+, install `vp` and run `vp install` in the project first. Confirm
+  `vp --version` works in the same terminal where you run Poros.
 
 On Linux, an administrator may need to allow your user to configure Tailscale
 once:
@@ -44,13 +48,13 @@ With Nix installed:
 
 ```sh
 nix profile install github:gildrb/poros
-poros bun run dev
+poros vp dev
 ```
 
 Or run without installing:
 
 ```sh
-nix run github:gildrb/poros -- bun run dev
+nix run github:gildrb/poros -- vp dev
 ```
 
 The flake supports Apple Silicon and Intel macOS and Linux. It also exports
@@ -101,14 +105,14 @@ flake also exports `poros.overlays.default` for configurations that prefer
 
 ```sh
 nix build
-./result/bin/poros bun run dev
+./result/bin/poros vp dev
 ```
 
 Or, with Go and the process inspection tools available:
 
 ```sh
 go install ./cmd/poros
-poros bun run dev
+poros vp dev
 ```
 
 The Nix package includes its process-inspection dependencies. Tailscale remains
@@ -140,5 +144,7 @@ code secret from authorized viewers.
 go test ./...
 ```
 
-The `tests/e2e` fixture exercises real Bun + Vite through a private HTTPS URL.
-See its README for the cross-machine browser test.
+The `tests/e2e` fixture uses Vite+ with a frozen pnpm lockfile. Its existing
+browser check verifies private HTTPS and same-origin HMR without reloading the
+document. See its README for the user-run cross-machine procedure. Poros does
+not install Vite+ or change the application's Vite configuration.
