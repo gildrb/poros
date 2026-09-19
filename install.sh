@@ -30,12 +30,15 @@ target="${arch}-${os}"
 tmpdir="$(mktemp -d)"
 trap 'rm -rf "$tmpdir"' EXIT
 
-api_url="https://api.github.com/repos/${REPO}/releases/latest"
+# Resolve the latest release tag from the releases/latest redirect. The
+# web endpoint is not rate limited like the REST API and needs no token.
+follow_url="https://github.com/${REPO}/releases/latest"
 tag="$(
-  curl --proto '=https' --tlsv1.2 -fsSL "$api_url" |
-    grep -o '"tag_name": *"[^"]*"' |
+  curl --proto '=https' --tlsv1.2 -fsSLI "$follow_url" |
+    grep -i '^location:' |
     head -n 1 |
-    cut -d'"' -f4
+    sed 's|.*/tag/||' |
+    tr -d '\r'
 )"
 case "$tag" in
   v[0-9]*) ;;
