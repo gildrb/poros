@@ -108,15 +108,16 @@ nix build
 ./result/bin/poros vp dev
 ```
 
-Or, with Go and the process inspection tools available:
+Or, with a Rust toolchain available:
 
 ```sh
-go install ./cmd/poros
+cargo install --path .
 poros vp dev
 ```
 
-The Nix package includes its process-inspection dependencies. Tailscale remains
-an independently installed, authenticated host service.
+On Linux, process discovery reads /proc directly. On macOS it uses the system
+`ps` and `lsof`. Tailscale remains an independently installed, authenticated
+host service.
 
 ## Lifetime and security
 
@@ -141,7 +142,7 @@ code secret from authorized viewers.
 ## Validation
 
 ```sh
-go test ./...
+cargo test
 ```
 
 The `tests/e2e` fixture uses Vite+ with a frozen pnpm lockfile. Its existing

@@ -19,7 +19,10 @@
         let
           pkgs = nixpkgs.legacyPackages.${system};
         in
-        pkgs.callPackage ./nix/package.nix { inherit version; };
+        pkgs.callPackage ./nix/package.nix {
+          buildRustPackage = pkgs.rustPlatform.buildRustPackage;
+          inherit version;
+        };
     in
     {
       packages = forAllSystems (system: {
