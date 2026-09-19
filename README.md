@@ -10,6 +10,10 @@ Run a development command. Open its private HTTPS link on your Mac, phone, or ta
 ```sh
 poros vp dev
 ```
+or
+```sh
+p vp dev
+```
 
 Run this in your project on the machine doing the development work. Open the
 printed link on any device connected to your tailnet and permitted by its access
