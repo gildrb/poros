@@ -8,8 +8,17 @@ permissions:
   contents: write
 
 jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+
   build:
+    needs: prepare
     strategy:
+      fail-fast: false
       matrix:
         include:
           - os: ubuntu-latest
@@ -21,6 +30,8 @@ jobs:
           - os: macos-13
             target: x86_64-apple-darwin
     runs-on: ${{ matrix.os }}
+    env:
+      GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -31,22 +42,8 @@ jobs:
           cp target/release/poros dist/
           tar -czf "poros-${{ matrix.target }}.tar.gz" -C dist poros
           sha256sum "poros-${{ matrix.target }}.tar.gz" > "poros-${{ matrix.target }}.tar.gz.sha256"
-      - uses: actions/upload-artifact@v4
-        with:
-          name: poros-${{ matrix.target }}
-          path: |
-            poros-${{ matrix.target }}.tar.gz
-            poros-${{ matrix.target }}.tar.gz.sha256
-
-  release:
-    needs: build
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          merge-multiple: true
-          path: dist
-      - uses: softprops/action-gh-release@v2
-        with:
-          files: dist/*
-          generate_release_notes: true
+      - run: |
+          gh release upload "$GITHUB_REF_NAME" \
+            "poros-${{ matrix.target }}.tar.gz" \
+            "poros-${{ matrix.target }}.tar.gz.sha256" \
+            --repo "$GITHUB_REPOSITORY" --clobber
