@@ -2,7 +2,7 @@
 
 Install
 ```sh
-curl -fsSL https://raw.githubusercontent.com/gildrb/poros/main/install.sh | bashka
+curl -fsSL https://raw.githubusercontent.com/gildrb/poros/main/install.sh | bash
 ```
 
 Run a development command. Open its private HTTPS link on your Mac, phone, or tablet.
