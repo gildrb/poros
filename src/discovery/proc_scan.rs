@@ -105,14 +105,20 @@ pub fn loopback_listeners(pids: &[u32]) -> Vec<String> {
             let Some(ip) = parse_hex_address(address_hex) else {
                 continue;
             };
-            if !ip.is_loopback() {
+            // A wildcard bind (0.0.0.0 / ::) also serves loopback clients;
+            // many dev servers default to it.
+            if !ip.is_loopback() && !ip.is_unspecified() {
                 continue;
             }
             let inode = columns[9].to_string();
             if !inodes.contains(&inode) {
                 continue;
             }
-            let host = format_host(&ip);
+            let host = if ip.is_unspecified() {
+                "127.0.0.1".to_string()
+            } else {
+                format_host(&ip)
+            };
             addresses.insert(format!("{host}:{port}"));
         }
     }

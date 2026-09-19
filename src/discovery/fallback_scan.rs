@@ -54,9 +54,22 @@ pub fn loopback_listeners(pids: &[u32]) -> Vec<String> {
             continue;
         };
         if let Some((host, port)) = address.rsplit_once(':') {
-            if is_loopback_host(host) && port.parse::<u16>().is_ok() {
-                addresses.insert(address.to_string());
+            if port.parse::<u16>().is_err() {
+                continue;
             }
+            // Wildcard binds ("*:port") serve loopback clients too; lsof also
+            // reports them for servers bound to 0.0.0.0 or ::.
+            let normalized = if host == "*" || is_loopback_host(host) {
+                if let Some(plain) = host.strip_prefix('[').and_then(|rest| rest.strip_suffix(']'))
+                {
+                    format!("[{plain}]:{port}")
+                } else {
+                    format!("127.0.0.1:{port}")
+                }
+            } else {
+                continue;
+            };
+            addresses.insert(normalized);
         }
     }
     addresses.into_iter().collect()
@@ -71,7 +84,7 @@ fn is_loopback_host(host: &str) -> bool {
         return true;
     }
     host.parse::<std::net::IpAddr>()
-        .map(|ip| ip.is_loopback())
+        .map(|ip| ip.is_loopback() || ip.is_unspecified())
         .unwrap_or(false)
 }
 
