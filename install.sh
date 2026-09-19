@@ -14,8 +14,8 @@ command -v curl >/dev/null 2>&1 || fail "curl is required"
 command -v tar >/dev/null 2>&1 || fail "tar is required"
 
 case "$(uname -s)" in
-  Linux) os="linux" ;;
-  Darwin) os="darwin" ;;
+  Linux) os="unknown-linux-gnu" ;;
+  Darwin) os="apple-darwin" ;;
   *) fail "unsupported operating system: $(uname -s); use 'nix profile install github:${REPO}' or 'cargo install --git https://github.com/${REPO}'" ;;
 esac
 
