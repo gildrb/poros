@@ -41,9 +41,6 @@ sudo tailscale set --operator="$USER"
 This grants your account Tailscale operator access, not just permission to run
 Poros. Poros does not grant this permission itself or run your application as root.
 
-Edit the files on that machine, using your remote editor or terminal. Changes in
-an independent checkout on your Mac are not synchronized by Poros.
-
 ## Install
 
 With Nix installed:
@@ -140,14 +137,3 @@ Commands that detach into separate process groups are not supported.
 Browser Host and Origin checks protect the proxy boundary. Keep application
 secrets out of frontend bundles: private network access does not make browser
 code secret from authorized viewers.
-
-## Validation
-
-```sh
-cargo test
-```
-
-The `tests/e2e` fixture uses Vite+ with a frozen pnpm lockfile. Its existing
-browser check verifies private HTTPS and same-origin HMR without reloading the
-document. See its README for the user-run cross-machine procedure. Poros does
-not install Vite+ or change the application's Vite configuration.
