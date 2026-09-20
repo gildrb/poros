@@ -20,11 +20,6 @@ printed link on any device connected to your tailnet and permitted by its access
 rules. Your browser stays local; your code, builds, and development server stay
 on the development machine.
 
-Use `poros vp dev` for a [Vite+](https://viteplus.dev/guide/) project. Plain Vite
-commands such as `poros bun run dev` still work. Poros passes the command and
-arguments through unchanged; no framework adapter or port placeholder is needed.
-It discovers the command's loopback listener, including Vite's next available
-port, and forwards HTTP and hot-reload WebSockets.
 
 ## Requirements
 
@@ -35,9 +30,7 @@ port, and forwards HTTP and hot-reload WebSockets.
   Certificate Transparency logs; the development site itself remains private.
 - Tailnet access rules that allow the selected HTTPS port.
 - The project's usual tools and dependencies installed on the development machine.
-  For Vite+, install `vp` and run `vp install` in the project first. Confirm
-  `vp --version` works in the same terminal where you run Poros.
-
+  
 On Linux, an administrator may need to allow your user to configure Tailscale
 once:
 
