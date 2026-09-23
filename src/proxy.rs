@@ -356,6 +356,9 @@ fn relay_http(mut client: TcpStream, mut backend: TcpStream, head: RequestHead, 
     if client.write_all(&rewritten).is_err() {
         return;
     }
+    if client.write_all(&response_head[head_end..]).is_err() {
+        return;
+    }
     let _ = std::io::copy(&mut backend, &mut client);
     let _ = client.shutdown(std::net::Shutdown::Write);
 }
@@ -426,27 +429,21 @@ fn rewrite_response_head(head: &[u8], shared: &Shared) -> Vec<u8> {
     let text = String::from_utf8_lossy(head).into_owned();
     let target_host = format!("{}:{}", shared.target.host, shared.target.port);
     let mut output = Vec::with_capacity(head.len() + 64);
-    let mut in_head = true;
     for line in text.split("\r\n") {
-        if in_head && line.is_empty() {
-            in_head = false;
+        if line.is_empty() {
             output.extend_from_slice(b"\r\n");
-            continue;
+            break;
         }
-        let rewritten = if in_head {
-            if let Some(rest) = line
-                .strip_prefix("Location:")
-                .or_else(|| line.strip_prefix("location:"))
+        let rewritten = if let Some(rest) = line
+            .strip_prefix("Location:")
+            .or_else(|| line.strip_prefix("location:"))
+        {
+            let location = rest.trim();
+            if let Some(path) = location
+                .strip_prefix("http://")
+                .and_then(|rest| rest.strip_prefix(target_host.as_str()))
             {
-                let location = rest.trim();
-                if let Some(path) = location
-                    .strip_prefix("http://")
-                    .and_then(|rest| rest.strip_prefix(target_host.as_str()))
-                {
-                    format!("Location: https://{}{}\r\n", shared.authority, path)
-                } else {
-                    format!("{line}\r\n")
-                }
+                format!("Location: https://{}{}\r\n", shared.authority, path)
             } else {
                 format!("{line}\r\n")
             }
