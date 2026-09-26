@@ -25,6 +25,9 @@ const MAX_SERVE_ATTEMPTS: usize = 4;
 struct ChildProcess {
     process: Child,
     pid: u32,
+    /// The group was made the terminal's foreground group; Poros takes the
+    /// terminal back once the command is gone.
+    terminal: bool,
 }
 
 /// Foreground `tailscale serve` CLI, used only without a LocalAPI socket.
@@ -285,6 +288,7 @@ fn supervise(c: &Config, events: &Events, stdout: &mut dyn Write) -> Result<(), 
         https_port,
         deadline: Instant::now() + c.timeout,
     };
+    let terminal = child_state.as_ref().is_some_and(|child| child.terminal);
     let (exit, route) = run.execute(stdout, c.target.clone(), &mut child_state);
     // Stop the dev command first, then remove its route, as before.
     let failure = match exit {
@@ -303,6 +307,9 @@ fn supervise(c: &Config, events: &Events, stdout: &mut dyn Write) -> Result<(), 
             failure
         }
     };
+    if terminal {
+        hand_terminal(unsafe { libc::getpgrp() });
+    }
     if let Some((route, ready)) = route {
         route.stop(&mut std::io::stderr(), ready);
     }
@@ -537,12 +544,21 @@ fn spawn_child(command: &[String]) -> Result<ChildProcess, String> {
     builder.stdin(Stdio::inherit());
     builder.stdout(Stdio::inherit());
     builder.stderr(Stdio::inherit());
+    // A dev server that reads its terminal (Vite's shortcuts) must own it: a
+    // background group that touches the terminal is stopped by SIGTTIN.
+    let terminal = unsafe {
+        libc::isatty(libc::STDIN_FILENO) == 1
+            && libc::tcgetpgrp(libc::STDIN_FILENO) == libc::getpgrp()
+    };
     unsafe {
-        builder.pre_exec(|| {
+        builder.pre_exec(move || {
             // The child becomes its own process group leader so Poros can
             // signal the whole tree without touching unrelated processes.
             if libc::setpgid(0, 0) != 0 {
                 return Err(std::io::Error::last_os_error());
+            }
+            if terminal {
+                hand_terminal(libc::getpgrp());
             }
             Ok(())
         });
@@ -558,7 +574,31 @@ fn spawn_child(command: &[String]) -> Result<ChildProcess, String> {
     unsafe {
         let _ = libc::setpgid(pid_i32, pid_i32);
     }
-    Ok(ChildProcess { process, pid })
+    // Both halves hand over the terminal, so neither order of scheduling
+    // lets the child read it from the background.
+    if terminal {
+        hand_terminal(pid_i32);
+    }
+    Ok(ChildProcess {
+        process,
+        pid,
+        terminal,
+    })
+}
+
+/// Makes `group` the terminal's foreground process group. SIGTTOU is blocked
+/// meanwhile, since a background caller would otherwise be stopped by it.
+/// Async-signal-safe: the child runs it between fork and exec.
+fn hand_terminal(group: libc::pid_t) {
+    unsafe {
+        let mut block: libc::sigset_t = std::mem::zeroed();
+        let mut previous: libc::sigset_t = std::mem::zeroed();
+        libc::sigemptyset(&mut block);
+        libc::sigaddset(&mut block, libc::SIGTTOU);
+        libc::pthread_sigmask(libc::SIG_BLOCK, &block, &mut previous);
+        let _ = libc::tcsetpgrp(libc::STDIN_FILENO, group);
+        libc::pthread_sigmask(libc::SIG_SETMASK, &previous, std::ptr::null_mut());
+    }
 }
 
 fn terminate_child(child_state: &mut Option<ChildProcess>, signal_number: i32) {
