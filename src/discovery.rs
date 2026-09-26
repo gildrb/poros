@@ -30,7 +30,7 @@ pub fn discover_target(root_pid: u32) -> Result<Option<TargetUrl>, String> {
     if pids.is_empty() {
         return Ok(None);
     }
-    let listeners = loopback_listeners(&pids);
+    let listeners = loopback_listeners(&pids)?;
     let candidates = probe_listeners(listeners)?;
     match candidates.len() {
         0 => Ok(None),

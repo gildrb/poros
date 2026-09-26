@@ -1,6 +1,7 @@
 pub mod cli;
 pub mod dashboard;
 pub mod discovery;
+pub mod localapi;
 pub mod proxy;
 pub mod runner;
 pub mod serve;

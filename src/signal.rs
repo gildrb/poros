@@ -27,11 +27,8 @@ pub struct Events {
     read_fd: libc::c_int,
 }
 
-/// Which descriptors became ready during `Events::wait_with`.
-pub struct Ready {
-    pub woken: bool,
-    pub extra: bool,
-}
+/// Most descriptors `Events::wait_with` watches besides the signal pipe.
+pub const MAX_EXTRA: usize = 2;
 
 impl Events {
     /// Installs handlers for SIGINT, SIGTERM, SIGHUP, SIGCHLD, plus `extra`
@@ -67,24 +64,27 @@ impl Events {
     /// Sleeps until a signal arrives or the timeout passes; `None` waits
     /// indefinitely.
     pub fn wait(&self, timeout: Option<Duration>) {
-        self.wait_with(None, timeout);
+        self.wait_with(&[], timeout);
     }
 
-    /// Like `wait`, but also returns when `extra` becomes readable.
-    pub fn wait_with(&self, extra: Option<libc::c_int>, timeout: Option<Duration>) -> Ready {
-        let mut fds = [
-            libc::pollfd {
-                fd: self.read_fd,
-                events: libc::POLLIN,
-                revents: 0,
-            },
-            libc::pollfd {
-                fd: extra.unwrap_or(-1),
-                events: libc::POLLIN,
-                revents: 0,
-            },
-        ];
-        let count: libc::nfds_t = if extra.is_some() { 2 } else { 1 };
+    /// Like `wait`, but also returns when one of `extra` becomes readable
+    /// (or hangs up). Negative descriptors are ignored. Entry `i` of the
+    /// result reports `extra[i]`.
+    ///
+    /// # Panics
+    /// When given more than `MAX_EXTRA` descriptors.
+    pub fn wait_with(&self, extra: &[libc::c_int], timeout: Option<Duration>) -> [bool; MAX_EXTRA] {
+        assert!(extra.len() <= MAX_EXTRA, "too many descriptors to wait on");
+        let blank = libc::pollfd {
+            fd: -1,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        let mut fds = [blank; MAX_EXTRA + 1];
+        fds[0].fd = self.read_fd;
+        for (slot, fd) in fds[1..].iter_mut().zip(extra) {
+            slot.fd = *fd;
+        }
         let millis = match timeout {
             None => -1,
             Some(duration) => {
@@ -94,22 +94,20 @@ impl Events {
                 libc::c_int::try_from(rounded).unwrap_or(libc::c_int::MAX)
             }
         };
-        let result = unsafe { libc::poll(fds.as_mut_ptr(), count, millis) };
-        if result <= 0 {
-            // Timeout, or EINTR from a handler whose byte is still queued.
-            return Ready {
-                woken: false,
-                extra: false,
-            };
+        // Unused slots stay -1, which poll(2) skips.
+        let count = fds.len() as libc::nfds_t;
+        let mut ready = [false; MAX_EXTRA];
+        // A non-positive result is a timeout, or EINTR from a handler whose
+        // byte is still queued for the next call.
+        if unsafe { libc::poll(fds.as_mut_ptr(), count, millis) } > 0 {
+            if fds[0].revents != 0 {
+                self.drain();
+            }
+            for (flag, slot) in ready.iter_mut().zip(&fds[1..]) {
+                *flag = slot.revents != 0;
+            }
         }
-        let woken = fds[0].revents != 0;
-        if woken {
-            self.drain();
-        }
-        Ready {
-            woken,
-            extra: extra.is_some() && fds[1].revents != 0,
-        }
+        ready
     }
 
     fn drain(&self) {

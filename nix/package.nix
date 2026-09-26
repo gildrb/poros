@@ -17,8 +17,8 @@ buildRustPackage {
     POROS_VERSION = version;
   };
 
-  # The binary embeds its tools path expectations at runtime: Tailscale and
-  # process inspection run through PATH, not through this package.
+  # Nothing is wrapped: Poros talks to tailscaled's LocalAPI socket, and only
+  # falls back to a `tailscale` CLI on PATH where no socket exists.
   meta = {
     description = "Expose local development servers privately over Tailscale";
     homepage = "https://github.com/gildrb/poros";

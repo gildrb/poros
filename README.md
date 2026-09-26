@@ -20,6 +20,18 @@ printed link on any device connected to your tailnet and permitted by its access
 rules. Your browser stays local; your code, builds, and development server stay
 on the development machine.
 
+## Dashboard
+
+```sh
+poros dashboard
+```
+
+Lists every listening TCP server your user owns, with its Poros HTTPS URL,
+working directory, and command. Select a row with ↑/↓ (or j/k) and press `x`
+then `y` to stop it; `x` again offers a force-kill. A Poros row stops its whole
+session: the dev server and its HTTPS route. `r` refreshes, `q` quits. Piped
+output prints the table once. To run a program named `dashboard`, use
+`poros -- dashboard`.
 
 ## Requirements
 
@@ -107,16 +119,21 @@ nix build
 ./result/bin/poros vp dev
 ```
 
-Or, with a Rust toolchain available:
+Or, with Rust 1.80 or newer:
 
 ```sh
 cargo install --path .
 poros vp dev
 ```
 
-On Linux, process discovery reads /proc directly. On macOS it uses the system
-`ps` and `lsof`. Tailscale remains an independently installed, authenticated
-host service.
+On Linux, process discovery reads /proc and the kernel's socket diagnostics
+directly. On macOS it uses the system `ps`, `lsof`, and `netstat`.
+
+Tailscale remains an independently installed, authenticated host service. Poros
+talks to tailscaled's local socket when it has one (Linux, and the open-source
+macOS daemon), so no extra Tailscale process runs. Otherwise, as with the macOS
+app, it runs the `tailscale` CLI; `--tailscale-cli` or `TAILSCALE_CLI` selects
+the CLI explicitly.
 
 ## Lifetime and security
 
@@ -132,8 +149,11 @@ only that invocation's sharing session. Poros never runs `tailscale serve reset`
 Run Poros inside a persistent server terminal if it should survive your SSH
 session disconnecting. Poros is not a daemon or process-session manager. A hard
 kill of Poros can leave its child processes alive; do not treat it as a sandbox.
+Over tailscaled's socket, its HTTPS route is still removed when Poros dies.
 Commands that detach into separate process groups are not supported.
 
-Browser Host and Origin checks protect the proxy boundary. Keep application
-secrets out of frontend bundles: private network access does not make browser
-code secret from authorized viewers.
+Browser Host and Origin checks protect the proxy boundary. After they pass,
+Poros forwards requests and WebSocket upgrades with the local Host, so dev
+servers that reject foreign hosts, like Vite, need no configuration. Keep
+application secrets out of frontend bundles: private network access does not
+make browser code secret from authorized viewers.

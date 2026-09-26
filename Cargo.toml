@@ -2,7 +2,7 @@
 name = "poros"
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.74"
+rust-version = "1.80"
 description = "Expose local development servers privately over Tailscale"
 license = "MIT"
 
@@ -12,6 +12,9 @@ serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"
 
 [profile.release]
+# Poros is I/O-bound: measured identical CPU per request at opt-level 3 and
+# "z", with a smaller binary and resident code at "z".
+opt-level = "z"
 lto = true
 codegen-units = 1
 strip = true

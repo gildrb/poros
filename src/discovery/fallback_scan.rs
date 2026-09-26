@@ -38,9 +38,9 @@ pub fn process_table() -> Vec<ProcessInfo> {
 }
 
 /// Every listening TCP socket held by a process this user can inspect.
-pub fn all_listeners() -> Vec<Listener> {
-    // lsof exits 1 when no sockets match; failure yields an empty result.
-    let output = capture(&["lsof", "-nP", "-iTCP", "-sTCP:LISTEN", "-Fpn"]).unwrap_or_default();
+pub fn all_listeners() -> Result<Vec<Listener>, String> {
+    // lsof exits 1 when no sockets match; `capture` keeps its output anyway.
+    let output = capture(&["lsof", "-nP", "-iTCP", "-sTCP:LISTEN", "-Fpn"])?;
     let mut listeners = Vec::new();
     let mut pid: Option<u32> = None;
     for line in output.lines() {
@@ -73,7 +73,7 @@ pub fn all_listeners() -> Vec<Listener> {
             listeners.push(listener);
         }
     }
-    listeners
+    Ok(listeners)
 }
 
 /// Current directory of each pid, where readable.
@@ -103,13 +103,13 @@ pub fn working_directories(pids: &[u32]) -> std::collections::HashMap<u32, Strin
 /// Cheap fingerprint of every LISTEN socket: one `netstat` call instead of
 /// `lsof` and `ps`. Equal fingerprints mean the full scan would find the same
 /// listeners, barring a restart on the same address between two calls.
-pub fn listen_signature() -> String {
-    let output = capture(&["netstat", "-an", "-p", "tcp"]).unwrap_or_default();
-    output
+pub fn listen_signature() -> Result<String, String> {
+    let output = capture(&["netstat", "-an", "-p", "tcp"])?;
+    Ok(output
         .lines()
         .filter(|line| line.ends_with("LISTEN"))
         .collect::<Vec<_>>()
-        .join("\n")
+        .join("\n"))
 }
 
 /// Non-Linux fallback: `ps` for process ownership and `lsof` for sockets,
@@ -135,9 +135,9 @@ pub fn owned_processes(root_pid: u32) -> Vec<u32> {
     owned.into_iter().collect()
 }
 
-pub fn loopback_listeners(pids: &[u32]) -> Vec<String> {
+pub fn loopback_listeners(pids: &[u32]) -> Result<Vec<String>, String> {
     if pids.is_empty() {
-        return Vec::new();
+        return Ok(Vec::new());
     }
     let pid_list = pids
         .iter()
@@ -154,8 +154,8 @@ pub fn loopback_listeners(pids: &[u32]) -> Vec<String> {
         "-sTCP:LISTEN",
         "-Fn",
     ];
-    // lsof exits 1 when no sockets match; failure yields an empty result.
-    let output = capture(&arguments).unwrap_or_default();
+    // lsof exits 1 when no sockets match; `capture` keeps its output anyway.
+    let output = capture(&arguments)?;
     arguments.clear();
     let mut addresses: BTreeSet<String> = BTreeSet::new();
     for line in output.lines() {
@@ -183,7 +183,7 @@ pub fn loopback_listeners(pids: &[u32]) -> Vec<String> {
             addresses.insert(normalized);
         }
     }
-    addresses.into_iter().collect()
+    Ok(addresses.into_iter().collect())
 }
 
 fn is_loopback_host(host: &str) -> bool {

@@ -1,3 +1,5 @@
+use crate::localapi::LocalApi;
+use serde::de::IgnoredAny;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -24,6 +26,44 @@ struct StatusDocument {
 struct SelfStatus {
     #[serde(rename = "DNSName", default)]
     dns_name: String,
+    #[serde(rename = "CapMap", default)]
+    cap_map: Option<HashMap<String, IgnoredAny>>,
+    #[serde(rename = "Capabilities", default)]
+    capabilities: Option<Vec<String>>,
+}
+
+/// How Poros talks to Tailscale: tailscaled's LocalAPI socket when present,
+/// otherwise (macOS GUI app, or an explicitly chosen CLI) the `tailscale` CLI.
+pub enum Tailscale {
+    Local(LocalApi),
+    Cli(PathBuf),
+}
+
+impl Tailscale {
+    pub fn connect(explicit_cli: Option<&str>) -> Result<Self, String> {
+        let cli_chosen = explicit_cli.is_some()
+            || std::env::var_os("TAILSCALE_CLI").is_some_and(|value| !value.is_empty());
+        if !cli_chosen {
+            if let Some(api) = LocalApi::discover() {
+                return Ok(Self::Local(api));
+            }
+        }
+        find_cli(explicit_cli).map(Self::Cli)
+    }
+
+    pub fn node(&self) -> Result<TailnetNode, String> {
+        match self {
+            Self::Local(api) => parse_node(&api.status()?),
+            Self::Cli(cli) => load_node(cli),
+        }
+    }
+
+    pub fn serve_config(&self) -> Result<ServeConfig, String> {
+        match self {
+            Self::Local(api) => parse_serve_config(&api.serve_config()?.0),
+            Self::Cli(cli) => read_serve_config(cli),
+        }
+    }
 }
 
 #[derive(Deserialize, Default)]
@@ -119,6 +159,21 @@ pub fn parse_node(data: &str) -> Result<TailnetNode, String> {
     };
     if self_status.dns_name.is_empty() {
         return Err("Tailscale MagicDNS and HTTPS certificates are required".to_string());
+    }
+    // Same test as the CLI's PeerStatus.HasCap("https").
+    let https = self_status
+        .cap_map
+        .as_ref()
+        .is_some_and(|caps| caps.contains_key("https"))
+        || self_status
+            .capabilities
+            .as_ref()
+            .is_some_and(|caps| caps.iter().any(|cap| cap == "https"));
+    if !https {
+        return Err(
+            "Tailscale HTTPS certificates are not enabled for this tailnet; enable them in the admin console under DNS"
+                .to_string(),
+        );
     }
     Ok(TailnetNode {
         dns_name: self_status.dns_name.trim_end_matches('.').to_string(),

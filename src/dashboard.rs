@@ -114,11 +114,11 @@ fn interact(events: &Events, state: &mut State, stdout: &mut dyn Write) -> Resul
     loop {
         render(stdout, state).map_err(|error| error.to_string())?;
         let timeout = next_refresh.saturating_duration_since(Instant::now());
-        let ready = events.wait_with(Some(libc::STDIN_FILENO), Some(timeout));
+        let [input_ready, _] = events.wait_with(&[libc::STDIN_FILENO], Some(timeout));
         if events.take_signal().is_some() {
             return Ok(());
         }
-        if ready.extra {
+        if input_ready {
             let read =
                 unsafe { libc::read(libc::STDIN_FILENO, input.as_mut_ptr().cast(), input.len()) };
             let Ok(read) = usize::try_from(read) else {
@@ -217,18 +217,31 @@ impl State {
     /// Rescans processes only when the kernel's listener list changed, a
     /// rescan was requested, or the last one is older than FULL_SCAN_INTERVAL.
     fn refresh(&mut self) {
-        let signature = discovery::listen_signature();
+        // A failed scan keeps the last rows on screen and says why.
+        let signature = match discovery::listen_signature() {
+            Ok(signature) => signature,
+            Err(error) => {
+                self.message = error;
+                return;
+            }
+        };
         let fresh = self
             .scanned_at
             .is_some_and(|at| at.elapsed() < FULL_SCAN_INTERVAL);
         if !self.force_scan && fresh && signature == self.signature {
             return;
         }
+        let listeners = match discovery::all_listeners() {
+            Ok(listeners) => listeners,
+            Err(error) => {
+                self.message = error;
+                return;
+            }
+        };
         self.signature = signature;
         self.scanned_at = Some(Instant::now());
         self.force_scan = false;
         let processes = discovery::process_table();
-        let listeners = discovery::all_listeners();
         // Serve status only changes when listeners do; skip the CLI otherwise.
         let key: BTreeSet<(u32, u16)> = listeners.iter().map(|l| (l.pid, l.port)).collect();
         if key != self.routes_key || self.tailscale_note.is_some() {
@@ -318,8 +331,8 @@ impl State {
 }
 
 fn load_routes() -> Result<Vec<(u16, String)>, String> {
-    let cli = tailscale::find_cli(None)?;
-    Ok(tailscale::read_serve_config(&cli)?.loopback_routes())
+    let tailscale = tailscale::Tailscale::connect(None)?;
+    Ok(tailscale.serve_config()?.loopback_routes())
 }
 
 fn stop(row: &Row, pending: Pending, own_pid: u32) -> String {

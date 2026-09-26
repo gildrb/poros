@@ -4,7 +4,7 @@ use poros::tailscale::{parse_node, parse_serve_config};
 fn parses_running_node() {
     let document = r#"{
 		"BackendState": "Running",
-		"Self": { "DNSName": "server.tail1234.ts.net." }
+		"Self": { "DNSName": "server.tail1234.ts.net.", "CapMap": { "https": null } }
 	}"#;
     let node = parse_node(document).expect("parses");
     assert_eq!(node.dns_name, "server.tail1234.ts.net");
