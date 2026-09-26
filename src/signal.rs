@@ -1,82 +1,153 @@
 use std::sync::atomic::{AtomicI32, Ordering};
-use std::sync::mpsc;
+use std::time::Duration;
 
 static LAST_SIGNAL: AtomicI32 = AtomicI32::new(0);
+static PENDING_SIGNAL: AtomicI32 = AtomicI32::new(0);
+static WAKE_WRITE: AtomicI32 = AtomicI32::new(-1);
 
+/// Termination signals are recorded; every handled signal (including SIGCHLD
+/// and SIGWINCH) writes one byte so a sleeping `Events::wait` returns at once.
 extern "C" fn on_signal(signal: libc::c_int) {
-    LAST_SIGNAL.store(signal, Ordering::SeqCst);
-    // One byte wakes the reader thread; async-signal-safe.
+    if signal != libc::SIGCHLD && signal != libc::SIGWINCH {
+        LAST_SIGNAL.store(signal, Ordering::SeqCst);
+        PENDING_SIGNAL.store(signal, Ordering::SeqCst);
+    }
     let byte = [1u8];
-    let _ = unsafe {
-        libc::write(
-            SIGNAL_PIPE_WRITE.load(Ordering::Relaxed),
-            byte.as_ptr().cast(),
-            1,
-        )
-    };
+    let _ = unsafe { libc::write(WAKE_WRITE.load(Ordering::Relaxed), byte.as_ptr().cast(), 1) };
 }
 
-static SIGNAL_PIPE_WRITE: AtomicI32 = AtomicI32::new(-1);
-
-/// The most recent signal number observed by a handler, or 0.
+/// The most recent termination signal observed by a handler, or 0.
 pub fn last_signal() -> i32 {
     LAST_SIGNAL.load(Ordering::SeqCst)
 }
 
-/// Installs handlers for SIGINT, SIGTERM, and SIGHUP and forwards each received
-/// signal number through the returned channel.
-pub fn install() -> Result<std::sync::mpsc::Receiver<i32>, String> {
-    let mut fds = [0 as libc::c_int; 2];
-    if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 {
-        return Err("create signal pipe".to_string());
-    }
-    let (read_fd, write_fd) = (fds[0], fds[1]);
-    set_non_blocking(read_fd);
-    set_non_blocking(write_fd);
-    SIGNAL_PIPE_WRITE.store(write_fd, Ordering::SeqCst);
-    for signal in [libc::SIGINT, libc::SIGTERM, libc::SIGHUP] {
-        if unsafe { libc::signal(signal, on_signal as *const () as libc::sighandler_t) }
-            == libc::SIG_ERR
-        {
-            return Err("register signal handler".to_string());
-        }
-    }
-    let (sender, receiver) = mpsc::channel();
-    std::thread::Builder::new()
-        .name("poros-signals".to_string())
-        .spawn(move || {
-            let mut buffer = [0u8; 16];
-            loop {
-                let read = unsafe { libc::read(read_fd, buffer.as_mut_ptr().cast(), buffer.len()) };
-                if read <= 0 {
-                    if read == 0 {
-                        return;
-                    }
-                    let error = std::io::Error::last_os_error();
-                    if error.kind() != std::io::ErrorKind::WouldBlock
-                        && error.raw_os_error() != Some(libc::EINTR)
-                    {
-                        return;
-                    }
-                    continue;
-                }
-                for _ in 0..read {
-                    let signal = LAST_SIGNAL.load(Ordering::SeqCst);
-                    if sender.send(signal).is_err() {
-                        return;
-                    }
-                }
-            }
-        })
-        .map_err(|error| format!("start signal thread: {error}"))?;
-    Ok(receiver)
+/// Self-pipe woken by signal handlers. The owning thread sleeps in poll(2)
+/// with no periodic wakeups, so an idle Poros costs no CPU.
+pub struct Events {
+    read_fd: libc::c_int,
 }
 
-fn set_non_blocking(fd: libc::c_int) {
-    let flags = unsafe { libc::fcntl(fd, libc::F_GETFL, 0) };
-    if flags >= 0 {
-        let _ = unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) };
+/// Which descriptors became ready during `Events::wait_with`.
+pub struct Ready {
+    pub woken: bool,
+    pub extra: bool,
+}
+
+impl Events {
+    /// Installs handlers for SIGINT, SIGTERM, SIGHUP, SIGCHLD, plus `extra`
+    /// signals that should only wake the waiter.
+    pub fn install(extra: &[libc::c_int]) -> Result<Self, String> {
+        let mut fds = [0 as libc::c_int; 2];
+        if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 {
+            return Err(format!(
+                "create signal pipe: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+        let (read_fd, write_fd) = (fds[0], fds[1]);
+        for fd in fds {
+            set_flags(fd)?;
+        }
+        WAKE_WRITE.store(write_fd, Ordering::SeqCst);
+        let base = [libc::SIGINT, libc::SIGTERM, libc::SIGHUP, libc::SIGCHLD];
+        for &signal in base.iter().chain(extra) {
+            install_handler(signal)?;
+        }
+        Ok(Self { read_fd })
     }
+
+    /// Takes a pending termination signal, if any.
+    pub fn take_signal(&self) -> Option<i32> {
+        match PENDING_SIGNAL.swap(0, Ordering::SeqCst) {
+            0 => None,
+            signal => Some(signal),
+        }
+    }
+
+    /// Sleeps until a signal arrives or the timeout passes; `None` waits
+    /// indefinitely.
+    pub fn wait(&self, timeout: Option<Duration>) {
+        self.wait_with(None, timeout);
+    }
+
+    /// Like `wait`, but also returns when `extra` becomes readable.
+    pub fn wait_with(&self, extra: Option<libc::c_int>, timeout: Option<Duration>) -> Ready {
+        let mut fds = [
+            libc::pollfd {
+                fd: self.read_fd,
+                events: libc::POLLIN,
+                revents: 0,
+            },
+            libc::pollfd {
+                fd: extra.unwrap_or(-1),
+                events: libc::POLLIN,
+                revents: 0,
+            },
+        ];
+        let count: libc::nfds_t = if extra.is_some() { 2 } else { 1 };
+        let millis = match timeout {
+            None => -1,
+            Some(duration) => {
+                let rounded = duration
+                    .as_millis()
+                    .saturating_add(u128::from(duration.subsec_nanos() % 1_000_000 != 0));
+                libc::c_int::try_from(rounded).unwrap_or(libc::c_int::MAX)
+            }
+        };
+        let result = unsafe { libc::poll(fds.as_mut_ptr(), count, millis) };
+        if result <= 0 {
+            // Timeout, or EINTR from a handler whose byte is still queued.
+            return Ready {
+                woken: false,
+                extra: false,
+            };
+        }
+        let woken = fds[0].revents != 0;
+        if woken {
+            self.drain();
+        }
+        Ready {
+            woken,
+            extra: extra.is_some() && fds[1].revents != 0,
+        }
+    }
+
+    fn drain(&self) {
+        let mut buffer = [0u8; 64];
+        while unsafe { libc::read(self.read_fd, buffer.as_mut_ptr().cast(), buffer.len()) } > 0 {}
+    }
+}
+
+fn set_flags(fd: libc::c_int) -> Result<(), String> {
+    let status = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+    let descriptor = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+    if status < 0
+        || descriptor < 0
+        || unsafe { libc::fcntl(fd, libc::F_SETFL, status | libc::O_NONBLOCK) } < 0
+        || unsafe { libc::fcntl(fd, libc::F_SETFD, descriptor | libc::FD_CLOEXEC) } < 0
+    {
+        return Err(format!(
+            "configure signal pipe: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    Ok(())
+}
+
+fn install_handler(signal: libc::c_int) -> Result<(), String> {
+    let mut action: libc::sigaction = unsafe { std::mem::zeroed() };
+    action.sa_sigaction = on_signal as *const () as libc::sighandler_t;
+    // SA_RESTART keeps blocking I/O in relay threads uninterrupted.
+    action.sa_flags = libc::SA_RESTART | libc::SA_NOCLDSTOP;
+    if unsafe { libc::sigemptyset(&mut action.sa_mask) } != 0
+        || unsafe { libc::sigaction(signal, &action, std::ptr::null_mut()) } != 0
+    {
+        return Err(format!(
+            "register signal handler: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    Ok(())
 }
 
 /// Delivers a signal to the process group. Returns false when the group is gone.

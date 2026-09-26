@@ -1,10 +1,27 @@
 use crate::cli::TargetUrl;
 use std::io::{Read, Write};
 use std::net::TcpStream;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 const PROBE_TIMEOUT: Duration = Duration::from_millis(400);
-const TICK: Duration = Duration::from_millis(150);
+
+/// A listening TCP socket and the process holding it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Listener {
+    pub pid: u32,
+    pub ip: std::net::IpAddr,
+    pub port: u16,
+}
+
+/// Process metadata used by the dashboard.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProcessInfo {
+    pub pid: u32,
+    pub ppid: u32,
+    pub pgid: u32,
+    pub name: String,
+    pub command: String,
+}
 
 /// Polls the child's owned process set for exactly one live loopback HTTP
 /// listener. Returns Ok(None) while nothing is listening yet.
@@ -29,32 +46,6 @@ pub fn discover_target(root_pid: u32) -> Result<Option<TargetUrl>, String> {
             "multiple child HTTP listeners found: {:?}; select one with --target",
             candidates
         )),
-    }
-}
-
-/// Runs until the deadline, polling at 150 ms. Cancellation comes from
-/// checking the deadline at the call site between probes.
-pub fn wait_for_target<F>(
-    root_pid: u32,
-    deadline: Instant,
-    mut should_stop: F,
-) -> Result<Option<TargetUrl>, String>
-where
-    F: FnMut() -> bool,
-{
-    loop {
-        match discover_target(root_pid) {
-            Ok(Some(target)) => return Ok(Some(target)),
-            Ok(None) => {}
-            Err(error) => return Err(error),
-        }
-        if Instant::now() >= deadline {
-            return Ok(None);
-        }
-        if should_stop() {
-            return Ok(None);
-        }
-        std::thread::sleep(TICK.min(deadline.saturating_duration_since(Instant::now())));
     }
 }
 
@@ -143,13 +134,19 @@ fn split_host_port(address: &str) -> Result<(String, u32), String> {
 }
 
 #[cfg(target_os = "linux")]
-pub use proc_scan::{loopback_listeners, owned_processes};
+pub use proc_scan::{
+    all_listeners, listen_signature, loopback_listeners, owned_processes, process_table,
+    working_directories,
+};
 
 #[cfg(target_os = "linux")]
 mod proc_scan;
 
 #[cfg(not(target_os = "linux"))]
-pub use fallback_scan::{loopback_listeners, owned_processes};
+pub use fallback_scan::{
+    all_listeners, listen_signature, loopback_listeners, owned_processes, process_table,
+    working_directories,
+};
 
 #[cfg(not(target_os = "linux"))]
 mod fallback_scan;

@@ -28,6 +28,7 @@ pub struct Config {
 #[derive(Debug)]
 pub enum ParseOutcome {
     Config(Config),
+    Dashboard,
     Version(String),
     Help,
 }
@@ -199,6 +200,13 @@ fn is_loopback_host(host: &str) -> bool {
 }
 
 pub fn parse_config(args: &[String]) -> Result<ParseOutcome, String> {
+    // `poros -- dashboard` still runs a program named dashboard.
+    if args.first().map(String::as_str) == Some("dashboard") {
+        if args.len() > 1 {
+            return Err("dashboard takes no arguments".to_string());
+        }
+        return Ok(ParseOutcome::Dashboard);
+    }
     let mut https_port: Option<u16> = None;
     let mut tailscale_cli: Option<String> = None;
     let mut target: Option<TargetUrl> = None;
@@ -262,6 +270,8 @@ fn parse_flag_value(value: &str, name: &str) -> Result<bool, String> {
 
 pub fn usage_text() -> String {
     let mut text = String::from("Usage: poros [options] command [args ...]\n");
+    text.push_str("       poros dashboard\n");
+    text.push_str("    \tlist listening servers and stop the ones you no longer need\n");
     text.push_str("Options:\n");
     text.push_str("  -https int\n    \tHTTPS port (default: an unused port)\n");
     text.push_str("  -tailscale-cli string\n    \tpath to Tailscale CLI\n");

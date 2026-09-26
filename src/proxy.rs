@@ -1,6 +1,6 @@
 use crate::cli::TargetUrl;
 use std::io::{ErrorKind, Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -9,6 +9,8 @@ const MAX_HEADER_BYTES: usize = 32 * 1024;
 const MAX_REQUEST_BODY_BYTES: u64 = 16 * 1024 * 1024;
 const HEADER_READ_TIMEOUT: Duration = Duration::from_secs(10);
 const BACKEND_CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
+/// Back-off after accept errors such as EMFILE, so they cannot spin.
+const ACCEPT_ERROR_BACKOFF: Duration = Duration::from_millis(100);
 
 #[derive(Debug)]
 struct RequestHead {
@@ -24,7 +26,26 @@ pub struct Bridge {
     listener: TcpListener,
     target: TargetUrl,
     authority: String,
-    shutdown: Arc<AtomicBool>,
+    shutdown: Shutdown,
+}
+
+/// Stops a bridge whose accept loop is blocked in the kernel: the flag is
+/// set, then one loopback connection wakes the accept call.
+#[derive(Clone)]
+pub struct Shutdown {
+    flag: Arc<AtomicBool>,
+    address: SocketAddr,
+}
+
+impl Shutdown {
+    pub fn stop(&self) {
+        self.flag.store(true, Ordering::SeqCst);
+        let _ = TcpStream::connect_timeout(&self.address, BACKEND_CONNECT_TIMEOUT);
+    }
+
+    fn requested(&self) -> bool {
+        self.flag.load(Ordering::SeqCst)
+    }
 }
 
 impl Bridge {
@@ -32,67 +53,58 @@ impl Bridge {
     /// bridge so the caller can hand the exact address to Tailscale Serve.
     pub fn bind(target: TargetUrl, authority: String) -> Result<(Self, u16), String> {
         let listener = TcpListener::bind("127.0.0.1:0").map_err(|error| error.to_string())?;
-        let port = listener
-            .local_addr()
-            .map_err(|error| error.to_string())?
-            .port();
-        listener
-            .set_nonblocking(true)
-            .map_err(|error| error.to_string())?;
+        let address = listener.local_addr().map_err(|error| error.to_string())?;
         Ok((
             Self {
                 listener,
                 target,
                 authority,
-                shutdown: Arc::new(AtomicBool::new(false)),
+                shutdown: Shutdown {
+                    flag: Arc::new(AtomicBool::new(false)),
+                    address,
+                },
             },
-            port,
+            address.port(),
         ))
     }
 
-    pub fn shutdown_handle(&self) -> Arc<AtomicBool> {
+    pub fn shutdown_handle(&self) -> Shutdown {
         self.shutdown.clone()
     }
 
-    /// Accept loop; one thread per connection. Returns when shutdown is set.
+    /// Blocking accept loop; one thread per connection. Returns after
+    /// `Shutdown::stop`.
     pub fn serve(&self) {
-        while !self.shutdown.load(Ordering::SeqCst) {
-            match self.listener.accept() {
+        loop {
+            let accepted = self.listener.accept();
+            if self.shutdown.requested() {
+                return;
+            }
+            match accepted {
                 Ok((stream, _address)) => {
-                    let bridge = Shared {
+                    let shared = Shared {
                         target: self.target.clone(),
                         authority: self.authority.clone(),
-                        shutdown: self.shutdown.clone(),
                     };
-                    std::thread::Builder::new()
+                    let _ = std::thread::Builder::new()
                         .name("poros-conn".to_string())
-                        .spawn(move || handle_connection(stream, bridge))
-                        .ok();
+                        .spawn(move || handle_connection(stream, shared));
                 }
-                Err(error) if error.kind() == ErrorKind::WouldBlock => {
-                    std::thread::sleep(Duration::from_millis(25));
-                }
-                Err(error) if error.kind() == ErrorKind::ConnectionAborted => {}
-                Err(_) => std::thread::sleep(Duration::from_millis(25)),
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        ErrorKind::ConnectionAborted | ErrorKind::Interrupted
+                    ) => {}
+                Err(_) => std::thread::sleep(ACCEPT_ERROR_BACKOFF),
             }
         }
     }
 }
 
+#[derive(Clone)]
 struct Shared {
     target: TargetUrl,
     authority: String,
-    shutdown: Arc<AtomicBool>,
-}
-
-impl Clone for Shared {
-    fn clone(&self) -> Self {
-        Self {
-            target: self.target.clone(),
-            authority: self.authority.clone(),
-            shutdown: self.shutdown.clone(),
-        }
-    }
 }
 
 fn handle_connection(mut stream: TcpStream, shared: Shared) {
@@ -548,7 +560,6 @@ mod tests {
                 port: 3000,
             },
             authority: AUTHORITY.to_string(),
-            shutdown: Arc::new(AtomicBool::new(false)),
         };
         let response =
             b"HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:3000/login\r\n\r\n".to_vec();
@@ -568,7 +579,6 @@ mod tests {
                 port: 3000,
             },
             authority: AUTHORITY.to_string(),
-            shutdown: Arc::new(AtomicBool::new(false)),
         };
         let mut header_bytes = b"POST /api HTTP/1.1\r\n".to_vec();
         for line in [

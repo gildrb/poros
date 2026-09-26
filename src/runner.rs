@@ -2,15 +2,17 @@ use crate::cli::{parse_config, Config, ParseOutcome};
 use crate::discovery;
 use crate::proxy::Bridge;
 use crate::serve::{serve_command, RESERVED_FUNNEL_PORTS};
+use crate::signal::Events;
 use crate::tailscale;
 use std::io::Write;
 use std::os::unix::process::CommandExt as _;
 use std::process::{Child, Command};
-use std::sync::atomic::Ordering;
-use std::sync::{mpsc, Arc};
+use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 const TERMINATE_GRACE: Duration = Duration::from_secs(5);
+/// Startup-only cadence for listener discovery and Serve readiness checks.
+/// Once the URL is printed, Poros sleeps until a signal or child exit.
 const POLL_INTERVAL: Duration = Duration::from_millis(150);
 const MAX_SERVE_ATTEMPTS: usize = 4;
 
@@ -82,6 +84,7 @@ pub fn run(args: Vec<String>) -> i32 {
             0
         }
         Ok(ParseOutcome::Config(config)) => run_config(config),
+        Ok(ParseOutcome::Dashboard) => crate::dashboard::run(),
         Err(error) => {
             let _ = writeln!(stderr, "poros: {error}");
             2
@@ -113,15 +116,15 @@ impl Failure {
 fn run_config(c: Config) -> i32 {
     let mut stdout = std::io::stdout();
     let mut stderr = std::io::stderr();
-    let signals = match crate::signal::install() {
-        Ok(receiver) => receiver,
+    let events = match Events::install(&[]) {
+        Ok(events) => events,
         Err(error) => {
             let _ = writeln!(stderr, "poros: {error}");
             return 1;
         }
     };
 
-    let outcome = supervise(&c, &signals, &mut stdout);
+    let outcome = supervise(&c, &events, &mut stdout);
     match outcome {
         Ok(()) => 0,
         Err(failure) => {
@@ -139,12 +142,7 @@ fn run_config(c: Config) -> i32 {
     }
 }
 
-fn supervise(
-    c: &Config,
-    signals: &mpsc::Receiver<i32>,
-    stdout: &mut dyn Write,
-) -> Result<(), Failure> {
-    let _stderr = std::io::stderr();
+fn supervise(c: &Config, events: &Events, stdout: &mut dyn Write) -> Result<(), Failure> {
     let cli = tailscale::find_cli(c.tailscale_cli.as_deref()).map_err(Failure::error)?;
     let node = tailscale::load_node(&cli).map_err(Failure::error)?;
     let initial = tailscale::read_serve_config(&cli).map_err(Failure::error)?;
@@ -184,7 +182,7 @@ fn supervise(
             };
             let mut resolved: Option<crate::cli::TargetUrl> = None;
             while resolved.is_none() {
-                if let Some(signal_number) = take_signal(signals) {
+                if let Some(signal_number) = events.take_signal() {
                     terminate_child(&mut child_state, signal_number);
                     return Err(Failure::plain(128 + signal_number));
                 }
@@ -209,7 +207,7 @@ fn supervise(
 							"no unique loopback HTTP listener found before timeout; bind to localhost or select --target",
 						));
                     }
-                    std::thread::sleep(POLL_INTERVAL);
+                    events.wait(Some(POLL_INTERVAL));
                 }
             }
             resolved.expect("target resolved")
@@ -219,16 +217,15 @@ fn supervise(
     let authority = format!("{}:{}", node.dns_name, https_port);
     let (bridge, bridge_actual) =
         Bridge::bind(target.clone(), authority.clone()).map_err(Failure::error)?;
-    let shutdown_flag = bridge.shutdown_handle();
+    let shutdown = bridge.shutdown_handle();
     let bridge_thread = std::thread::Builder::new()
         .name("poros-bridge".to_string())
         .spawn(move || bridge.serve())
-        .expect("bridge thread spawns");
+        .map_err(|error| Failure::error(format!("start bridge thread: {error}")))?;
     let bridge_url = format!("http://127.0.0.1:{bridge_actual}");
 
     let run_result = supervise_loop(
-        c,
-        signals,
+        events,
         stdout,
         &cli,
         https_port,
@@ -237,19 +234,16 @@ fn supervise(
         &target,
         deadline,
         &mut child_state,
-        &shutdown_flag,
-        &bridge_thread,
     );
 
-    shutdown_flag.store(true, Ordering::SeqCst);
+    shutdown.stop();
     let _ = bridge_thread.join();
     run_result
 }
 
 #[allow(clippy::too_many_arguments)]
 fn supervise_loop(
-    _c: &Config,
-    signals: &mpsc::Receiver<i32>,
+    events: &Events,
     stdout: &mut dyn Write,
     cli: &std::path::Path,
     https_port: u16,
@@ -258,21 +252,18 @@ fn supervise_loop(
     target: &crate::cli::TargetUrl,
     deadline: Instant,
     child_state: &mut Option<ChildProcess>,
-    _shutdown_flag: &Arc<std::sync::atomic::AtomicBool>,
-    _bridge_thread: &std::thread::JoinHandle<()>,
 ) -> Result<(), Failure> {
     let mut stderr = std::io::stderr();
     let mut serve_state: Option<ServeProcess> = None;
     let mut serve_attempt: usize = 0;
     let mut serve_ready = false;
-    let _serve_output: Option<String> = None;
     let mut retry_at: Option<Instant> = None;
 
     start_serve(cli, https_port, bridge_url, &mut serve_state).map_err(Failure::error)?;
     serve_attempt += 1;
 
     loop {
-        if let Some(signal_number) = take_signal(signals) {
+        if let Some(signal_number) = events.take_signal() {
             terminate_child(child_state, signal_number);
             let output = stop_serve(&mut serve_state);
             print_serve_output(&mut stderr, output, serve_ready);
@@ -340,7 +331,14 @@ fn supervise_loop(
                 }
             }
         }
-        std::thread::sleep(POLL_INTERVAL);
+        // Every exit path is a signal: SIGCHLD for the dev command or the
+        // Serve CLI, or a termination signal. Only startup needs a timer.
+        let timeout = match (serve_ready, retry_at) {
+            (_, Some(when)) => Some(when.saturating_duration_since(Instant::now())),
+            (false, None) => Some(POLL_INTERVAL),
+            (true, None) => None,
+        };
+        events.wait(timeout);
     }
 }
 
@@ -362,10 +360,6 @@ fn reserve_bridge_port() -> Result<u16, String> {
         .port();
     drop(listener);
     Ok(port)
-}
-
-fn take_signal(receiver: &mpsc::Receiver<i32>) -> Option<i32> {
-    receiver.try_recv().ok().filter(|signal| *signal != 0)
 }
 
 fn child_exit_code(child_state: &mut Option<ChildProcess>) -> Option<i32> {

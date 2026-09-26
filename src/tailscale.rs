@@ -252,6 +252,56 @@ impl ServeConfig {
         }
         false
     }
+
+    /// Every HTTPS URL that proxies to a loopback port, including foreground
+    /// sessions, keyed by that local port.
+    pub fn loopback_routes(&self) -> Vec<(u16, String)> {
+        let mut routes = Vec::new();
+        for (authority, route) in &self.web {
+            let origin = match authority.strip_suffix(":443") {
+                Some(host) => format!("https://{host}"),
+                None => format!("https://{authority}"),
+            };
+            for (path, handler) in &route.handlers {
+                if let Some(port) = loopback_proxy_port(&handler.proxy) {
+                    let suffix = if path == "/" { "" } else { path.as_str() };
+                    routes.push((port, format!("{origin}{suffix}")));
+                }
+            }
+        }
+        for child in self.foreground.values().flatten() {
+            routes.extend(child.loopback_routes());
+        }
+        routes.sort();
+        routes
+    }
+}
+
+/// Port of a Serve proxy target on this machine's loopback, e.g.
+/// `http://127.0.0.1:3000`, `localhost:3000`, or a bare `3000`.
+fn loopback_proxy_port(proxy: &str) -> Option<u16> {
+    let rest = proxy
+        .split_once("://")
+        .map(|(_, rest)| rest)
+        .unwrap_or(proxy);
+    let authority = rest.split('/').next().unwrap_or_default();
+    let Some((host, port)) = authority.rsplit_once(':') else {
+        return authority.parse().ok();
+    };
+    let host = host
+        .strip_prefix('[')
+        .and_then(|inner| inner.strip_suffix(']'))
+        .unwrap_or(host);
+    let loopback = host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<std::net::IpAddr>()
+            .map(|ip| ip.is_loopback())
+            .unwrap_or(false);
+    if loopback {
+        port.parse().ok()
+    } else {
+        None
+    }
 }
 
 fn port_of(host: &str) -> Option<u16> {

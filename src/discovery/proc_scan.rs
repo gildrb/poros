@@ -1,3 +1,4 @@
+use super::{Listener, ProcessInfo};
 use std::collections::{BTreeSet, HashMap};
 use std::path::PathBuf;
 
@@ -6,12 +7,11 @@ use std::path::PathBuf;
 fn stat_fields(text: &str) -> Option<(i64, i64, i64)> {
     let close = text.rfind(')')?;
     let pid: i64 = text[..close].split_whitespace().next()?.parse().ok()?;
-    let after = &text[close + 1..];
-    let fields = after.split_whitespace().collect::<Vec<_>>();
-    if fields.len() < 3 {
-        return None;
-    }
-    Some((pid, fields[1].parse().ok()?, fields[2].parse().ok()?))
+    let mut fields = text[close + 1..].split_whitespace();
+    let _state = fields.next()?;
+    let ppid = fields.next()?.parse().ok()?;
+    let pgid = fields.next()?.parse().ok()?;
+    Some((pid, ppid, pgid))
 }
 
 /// Every process owned by the spawned child: its process group plus all
@@ -19,8 +19,8 @@ fn stat_fields(text: &str) -> Option<(i64, i64, i64)> {
 pub fn owned_processes(root_pid: u32) -> Vec<u32> {
     let root = root_pid as i64;
     let mut table: HashMap<i64, (i64, i64)> = HashMap::new();
-    for entry in proc_entries() {
-        if let Ok(text) = std::fs::read_to_string(&entry) {
+    for pid in proc_pids() {
+        if let Ok(text) = std::fs::read_to_string(format!("/proc/{pid}/stat")) {
             if let Some((pid, ppid, pgid)) = stat_fields(&text) {
                 table.insert(pid, (ppid, pgid));
             }
@@ -44,25 +44,55 @@ pub fn owned_processes(root_pid: u32) -> Vec<u32> {
     owned.into_iter().map(|pid| pid as u32).collect()
 }
 
-fn proc_entries() -> impl Iterator<Item = PathBuf> {
+fn proc_pids() -> impl Iterator<Item = u32> {
     std::fs::read_dir("/proc")
         .into_iter()
         .flatten()
         .filter_map(|entry| entry.ok())
-        .filter(|entry| {
-            entry
-                .file_name()
-                .to_str()
-                .map(|name| name.bytes().all(|byte| byte.is_ascii_digit()))
-                .unwrap_or(false)
-        })
-        .map(|entry| entry.path().join("stat"))
+        .filter_map(|entry| entry.file_name().to_str()?.parse::<u32>().ok())
 }
 
-/// Listening loopback sockets held by the owned processes. Socket inodes are
-/// read from /proc/<pid>/fd and matched against /proc/net/tcp{,6}.
-pub fn loopback_listeners(pids: &[u32]) -> Vec<String> {
-    let mut inodes: BTreeSet<String> = BTreeSet::new();
+/// Every visible process with its parent, group, name, and command line.
+pub fn process_table() -> Vec<ProcessInfo> {
+    let mut processes = Vec::new();
+    for pid in proc_pids() {
+        let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
+            continue;
+        };
+        let Some((_, ppid, pgid)) = stat_fields(&stat) else {
+            continue;
+        };
+        let (Ok(ppid), Ok(pgid)) = (u32::try_from(ppid), u32::try_from(pgid)) else {
+            continue;
+        };
+        let name = std::fs::read_to_string(format!("/proc/{pid}/comm"))
+            .map(|text| text.trim_end().to_string())
+            .unwrap_or_default();
+        let command = std::fs::read(format!("/proc/{pid}/cmdline"))
+            .map(|bytes| {
+                bytes
+                    .split(|byte| *byte == 0)
+                    .filter(|part| !part.is_empty())
+                    .map(String::from_utf8_lossy)
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            })
+            .unwrap_or_default();
+        processes.push(ProcessInfo {
+            pid,
+            ppid,
+            pgid,
+            name,
+            command,
+        });
+    }
+    processes
+}
+
+/// Maps socket inodes to the pid holding them. /proc/<pid>/fd is readable
+/// only for the caller's own processes (or all of them as root).
+fn socket_owners(pids: impl Iterator<Item = u32>) -> HashMap<u64, u32> {
+    let mut owners = HashMap::new();
     for pid in pids {
         let directory = PathBuf::from(format!("/proc/{pid}/fd"));
         let Ok(entries) = std::fs::read_dir(&directory) else {
@@ -72,20 +102,26 @@ pub fn loopback_listeners(pids: &[u32]) -> Vec<String> {
             let Ok(target) = std::fs::read_link(entry.path()) else {
                 continue;
             };
-            let text = target.to_string_lossy();
-            let Some(inode) = text
-                .strip_prefix("socket:[")
+            let Some(inode) = target
+                .to_str()
+                .and_then(|text| text.strip_prefix("socket:["))
                 .and_then(|rest| rest.strip_suffix(']'))
+                .and_then(|inode| inode.parse::<u64>().ok())
             else {
                 continue;
             };
-            inodes.insert(inode.to_string());
+            owners.entry(inode).or_insert(pid);
         }
     }
-    if inodes.is_empty() {
-        return Vec::new();
+    owners
+}
+
+/// Every TCP socket in LISTEN state held by one of `owners`.
+fn listening_sockets(owners: &HashMap<u64, u32>) -> Vec<Listener> {
+    let mut listeners = Vec::new();
+    if owners.is_empty() {
+        return listeners;
     }
-    let mut addresses: BTreeSet<String> = BTreeSet::new();
     for table in ["/proc/net/tcp", "/proc/net/tcp6"] {
         let Ok(content) = std::fs::read_to_string(table) else {
             continue;
@@ -96,6 +132,13 @@ pub fn loopback_listeners(pids: &[u32]) -> Vec<String> {
             if columns.len() < 10 || columns[3] != "0A" {
                 continue;
             }
+            let Some(pid) = columns[9]
+                .parse::<u64>()
+                .ok()
+                .and_then(|inode| owners.get(&inode))
+            else {
+                continue;
+            };
             let Some((address_hex, port_hex)) = columns[1].split_once(':') else {
                 continue;
             };
@@ -105,22 +148,68 @@ pub fn loopback_listeners(pids: &[u32]) -> Vec<String> {
             let Some(ip) = parse_hex_address(address_hex) else {
                 continue;
             };
-            // A wildcard bind (0.0.0.0 / ::) also serves loopback clients;
-            // many dev servers default to it.
-            if !ip.is_loopback() && !ip.is_unspecified() {
-                continue;
-            }
-            let inode = columns[9].to_string();
-            if !inodes.contains(&inode) {
-                continue;
-            }
-            let host = if ip.is_unspecified() {
-                "127.0.0.1".to_string()
-            } else {
-                format_host(&ip)
-            };
-            addresses.insert(format!("{host}:{port}"));
+            listeners.push(Listener {
+                pid: *pid,
+                ip,
+                port,
+            });
         }
+    }
+    listeners
+}
+
+/// Current directory of each pid, where readable.
+pub fn working_directories(pids: &[u32]) -> HashMap<u32, String> {
+    pids.iter()
+        .filter_map(|pid| {
+            let path = std::fs::read_link(format!("/proc/{pid}/cwd")).ok()?;
+            Some((*pid, path.to_string_lossy().into_owned()))
+        })
+        .collect()
+}
+
+/// Cheap fingerprint of every LISTEN socket (address, uid, inode): two small
+/// kernel tables, no per-process work. Equal fingerprints mean the full
+/// scan would find the same listeners.
+pub fn listen_signature() -> String {
+    let mut signature = String::new();
+    for table in ["/proc/net/tcp", "/proc/net/tcp6"] {
+        let Ok(content) = std::fs::read_to_string(table) else {
+            continue;
+        };
+        for line in content.lines().skip(1) {
+            let columns: Vec<&str> = line.split_whitespace().collect();
+            if columns.len() >= 10 && columns[3] == "0A" {
+                signature.push_str(columns[1]);
+                signature.push(' ');
+                signature.push_str(columns[9]);
+                signature.push('\n');
+            }
+        }
+    }
+    signature
+}
+
+/// Every listening TCP socket held by a process this user can inspect.
+pub fn all_listeners() -> Vec<Listener> {
+    listening_sockets(&socket_owners(proc_pids()))
+}
+
+/// Listening loopback sockets held by the owned processes. Socket inodes are
+/// read from /proc/<pid>/fd and matched against /proc/net/tcp{,6}.
+pub fn loopback_listeners(pids: &[u32]) -> Vec<String> {
+    let mut addresses: BTreeSet<String> = BTreeSet::new();
+    for listener in listening_sockets(&socket_owners(pids.iter().copied())) {
+        // A wildcard bind (0.0.0.0 / ::) also serves loopback clients;
+        // many dev servers default to it.
+        let host = if listener.ip.is_unspecified() {
+            "127.0.0.1".to_string()
+        } else if listener.ip.is_loopback() {
+            format_host(&listener.ip)
+        } else {
+            continue;
+        };
+        addresses.insert(format!("{host}:{}", listener.port));
     }
     addresses.into_iter().collect()
 }
