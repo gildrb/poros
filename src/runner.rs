@@ -388,12 +388,18 @@ impl Run<'_> {
             if let Some(code) = child_exit_code(child_state) {
                 return Err(Exit::ChildExited(code));
             }
-            match discovery::discover_target(root_pid) {
-                Ok(Some(target)) => return Ok(target),
-                Ok(None) => {}
+            let unready = match discovery::discover_target(root_pid) {
+                Ok(discovery::Discovery::Found(target)) => return Ok(target),
+                Ok(discovery::Discovery::Pending(probes)) => probes,
                 Err(error) => return Err(failed(error)),
-            }
+            };
             if Instant::now() >= self.deadline {
+                if !unready.is_empty() {
+                    return Err(failed(format!(
+                        "multiple child HTTP listeners found but none answered GET / with 2xx or 3xx before timeout: {}; select one with --target",
+                        discovery::describe(&unready)
+                    )));
+                }
                 return Err(failed(
                     "no unique loopback HTTP listener found before timeout; bind to localhost or select --target",
                 ));

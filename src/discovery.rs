@@ -23,30 +23,75 @@ pub struct ProcessInfo {
     pub command: String,
 }
 
-/// Polls the child's owned process set for exactly one live loopback HTTP
-/// listener. Returns Ok(None) while nothing is listening yet.
-pub fn discover_target(root_pid: u32) -> Result<Option<TargetUrl>, String> {
+/// Outcome of one discovery poll.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Discovery {
+    Found(TargetUrl),
+    /// Nothing selectable yet. Lists the listeners seen when several answered
+    /// but none with a 2xx or 3xx status; empty when nothing answered.
+    Pending(Vec<Probe>),
+}
+
+/// A loopback listener that answered `GET /` with bytes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Probe {
+    pub address: String,
+    /// HTTP status from the response line, if one could be parsed.
+    pub status: Option<u16>,
+}
+
+impl Probe {
+    fn ready(&self) -> bool {
+        self.status
+            .is_some_and(|status| (200..400).contains(&status))
+    }
+}
+
+/// Formats probes as `address (status)` for error messages.
+pub fn describe(probes: &[Probe]) -> String {
+    probes
+        .iter()
+        .map(|probe| match probe.status {
+            Some(status) => format!("{} ({status})", probe.address),
+            None => format!("{} (no status)", probe.address),
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Polls the child's owned process set for its loopback HTTP listener. A sole
+/// answering listener is chosen whatever its status; among several, the one
+/// answering 2xx or 3xx is chosen. Returns Pending while nothing is selectable.
+pub fn discover_target(root_pid: u32) -> Result<Discovery, String> {
     let pids = owned_processes(root_pid);
     if pids.is_empty() {
-        return Ok(None);
+        return Ok(Discovery::Pending(Vec::new()));
     }
     let listeners = loopback_listeners(&pids)?;
-    let candidates = probe_listeners(listeners)?;
-    match candidates.len() {
-        0 => Ok(None),
-        1 => {
-            let address = &candidates[0];
-            let (host, port) = split_host_port(address)?;
-            Ok(Some(TargetUrl {
-                host,
-                port: port as u16,
-            }))
+    let probes = probe_listeners(listeners);
+    let chosen = match probes.len() {
+        0 => return Ok(Discovery::Pending(Vec::new())),
+        1 => &probes[0],
+        _ => {
+            let ready: Vec<&Probe> = probes.iter().filter(|probe| probe.ready()).collect();
+            match ready.len() {
+                0 => return Ok(Discovery::Pending(probes)),
+                1 => ready[0],
+                _ => {
+                    let addresses: Vec<&str> =
+                        ready.iter().map(|probe| probe.address.as_str()).collect();
+                    return Err(format!(
+                        "multiple child HTTP listeners found: {addresses:?}; select one with --target"
+                    ));
+                }
+            }
         }
-        _ => Err(format!(
-            "multiple child HTTP listeners found: {:?}; select one with --target",
-            candidates
-        )),
-    }
+    };
+    let (host, port) = split_host_port(&chosen.address)?;
+    Ok(Discovery::Found(TargetUrl {
+        host,
+        port: port as u16,
+    }))
 }
 
 pub fn required_tools_missing() -> Option<&'static str> {
@@ -71,33 +116,50 @@ fn tool_missing(_name: &str) -> Option<&'static str> {
     None
 }
 
-fn probe_listeners(addresses: Vec<String>) -> Result<Vec<String>, String> {
-    let mut responding = Vec::new();
-    for address in addresses {
-        if probe(address.as_str()) {
-            responding.push(address);
-        }
-    }
-    responding.sort();
-    Ok(responding)
+fn probe_listeners(addresses: Vec<String>) -> Vec<Probe> {
+    let mut responding: Vec<Probe> = addresses
+        .into_iter()
+        .filter_map(|address| probe(&address).map(|status| Probe { address, status }))
+        .collect();
+    responding.sort_by(|a, b| a.address.cmp(&b.address));
+    responding
 }
 
-fn probe(address: &str) -> bool {
-    let stream = TcpStream::connect_timeout(&parse_address(address), PROBE_TIMEOUT);
-    let Ok(mut stream) = stream else {
-        return false;
-    };
+/// Sends `GET /` and reads the status line. None when the listener sent no
+/// bytes; Some(None) when it sent bytes without a parsable HTTP status.
+fn probe(address: &str) -> Option<Option<u16>> {
+    let mut stream = TcpStream::connect_timeout(&parse_address(address), PROBE_TIMEOUT).ok()?;
     let _ = stream.set_read_timeout(Some(PROBE_TIMEOUT));
     let _ = stream.set_write_timeout(Some(PROBE_TIMEOUT));
     let request = format!("GET / HTTP/1.1\r\nHost: {address}\r\nConnection: close\r\n\r\n");
-    if stream.write_all(request.as_bytes()).is_err() {
-        return false;
+    stream.write_all(request.as_bytes()).ok()?;
+    let mut head = [0u8; 64];
+    let mut len = 0;
+    while len < head.len() && !head[..len].contains(&b'\n') {
+        match stream.read(&mut head[len..]) {
+            Ok(0) | Err(_) => break,
+            Ok(read) => len += read,
+        }
     }
-    let mut first = [0u8; 16];
-    stream
-        .read(&mut first)
-        .map(|read| read > 0)
-        .unwrap_or(false)
+    if len == 0 {
+        return None;
+    }
+    Some(parse_status(&head[..len]))
+}
+
+/// Parses the status code from an `HTTP/x.y NNN ...` response line.
+fn parse_status(head: &[u8]) -> Option<u16> {
+    let line = head.split(|&byte| byte == b'\n').next()?;
+    let line = std::str::from_utf8(line).ok()?;
+    let mut parts = line.split_ascii_whitespace();
+    if !parts.next()?.starts_with("HTTP/") {
+        return None;
+    }
+    let code = parts.next()?;
+    if code.len() != 3 {
+        return None;
+    }
+    code.parse().ok()
 }
 
 fn parse_address(address: &str) -> std::net::SocketAddr {
