@@ -1,5 +1,5 @@
-use super::{Listener, ProcessInfo};
-use std::collections::{BTreeSet, HashMap};
+use super::{Listener, LoopbackListener, OwnedProcess, ProcessInfo};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::PathBuf;
 
 /// Extracts (pid, ppid, pgid) from /proc/<pid>/stat. comm may contain spaces
@@ -16,7 +16,7 @@ fn stat_fields(text: &str) -> Option<(i64, i64, i64)> {
 
 /// Every process owned by the spawned child: its process group plus all
 /// ppid-descendants, which covers servers that detach into new sessions.
-pub fn owned_processes(root_pid: u32) -> Vec<u32> {
+pub fn owned_processes(root_pid: u32) -> Vec<OwnedProcess> {
     let root = root_pid as i64;
     let mut table: HashMap<i64, (i64, i64)> = HashMap::new();
     for pid in proc_pids() {
@@ -41,7 +41,16 @@ pub fn owned_processes(root_pid: u32) -> Vec<u32> {
             }
         }
     }
-    owned.into_iter().map(|pid| pid as u32).collect()
+    owned
+        .into_iter()
+        .filter_map(|pid| {
+            let (ppid, _) = table.get(&pid)?;
+            Some(OwnedProcess {
+                pid: u32::try_from(pid).ok()?,
+                ppid: u32::try_from(*ppid).ok()?,
+            })
+        })
+        .collect()
 }
 
 fn proc_pids() -> impl Iterator<Item = u32> {
@@ -161,10 +170,11 @@ pub fn all_listeners() -> Result<Vec<Listener>, String> {
     listening_sockets(&socket_owners(proc_pids()))
 }
 
-/// Listening loopback sockets held by the owned processes. Socket inodes are
-/// read from /proc/<pid>/fd and matched against the kernel's LISTEN table.
-pub fn loopback_listeners(pids: &[u32]) -> Result<Vec<String>, String> {
-    let mut addresses: BTreeSet<String> = BTreeSet::new();
+/// Listening loopback sockets held by the owned processes, with the pid
+/// holding each. Socket inodes are read from /proc/<pid>/fd and matched
+/// against the kernel's LISTEN table.
+pub fn loopback_listeners(pids: &[u32]) -> Result<Vec<LoopbackListener>, String> {
+    let mut listeners: BTreeMap<String, u32> = BTreeMap::new();
     for listener in listening_sockets(&socket_owners(pids.iter().copied()))? {
         // A wildcard bind (0.0.0.0 / ::) also serves loopback clients;
         // many dev servers default to it.
@@ -175,9 +185,14 @@ pub fn loopback_listeners(pids: &[u32]) -> Result<Vec<String>, String> {
         } else {
             continue;
         };
-        addresses.insert(format!("{host}:{}", listener.port));
+        listeners
+            .entry(format!("{host}:{}", listener.port))
+            .or_insert(listener.pid);
     }
-    Ok(addresses.into_iter().collect())
+    Ok(listeners
+        .into_iter()
+        .map(|(address, pid)| LoopbackListener { address, pid })
+        .collect())
 }
 
 struct ListenSocket {

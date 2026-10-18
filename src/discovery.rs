@@ -1,4 +1,5 @@
 use crate::cli::TargetUrl;
+use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::time::Duration;
@@ -23,12 +24,26 @@ pub struct ProcessInfo {
     pub command: String,
 }
 
+/// A process owned by the spawned child, with its parent.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OwnedProcess {
+    pub pid: u32,
+    pub ppid: u32,
+}
+
+/// A loopback address the owned processes listen on, and the process holding it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LoopbackListener {
+    pub address: String,
+    pub pid: u32,
+}
+
 /// Outcome of one discovery poll.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Discovery {
     Found(TargetUrl),
-    /// Nothing selectable yet. Lists the listeners seen when several answered
-    /// but none with a 2xx or 3xx status; empty when nothing answered.
+    /// Nothing selectable yet. Lists the listeners that answered without a
+    /// 2xx or 3xx status; empty when nothing answered.
     Pending(Vec<Probe>),
 }
 
@@ -59,39 +74,77 @@ pub fn describe(probes: &[Probe]) -> String {
         .join(", ")
 }
 
-/// Polls the child's owned process set for its loopback HTTP listener. A sole
-/// answering listener is chosen whatever its status; among several, the one
-/// answering 2xx or 3xx is chosen. Returns Pending while nothing is selectable.
+/// Polls the child's owned process set for its loopback HTTP listener. Only
+/// the listeners of the shallowest processes in the child's tree are probed:
+/// a dev server's helpers run below it (workerd under Vite), and some of their
+/// sockets are not HTTP, so a probe would corrupt their protocol or reach a
+/// port that is not the site. The one listener answering 2xx or 3xx is
+/// chosen. A listener answering anything else is not chosen here, even alone:
+/// a helper on the same process (Node's inspector) can listen before the dev
+/// server does. The runner takes a sole such listener at the deadline
+/// (`target`). Returns Pending while nothing is selectable.
 pub fn discover_target(root_pid: u32) -> Result<Discovery, String> {
-    let pids = owned_processes(root_pid);
-    if pids.is_empty() {
+    let owned = owned_processes(root_pid);
+    if owned.is_empty() {
         return Ok(Discovery::Pending(Vec::new()));
     }
+    let pids: Vec<u32> = owned.iter().map(|process| process.pid).collect();
     let listeners = loopback_listeners(&pids)?;
-    let probes = probe_listeners(listeners);
-    let chosen = match probes.len() {
-        0 => return Ok(Discovery::Pending(Vec::new())),
-        1 => &probes[0],
+    let probes = probe_listeners(shallowest(&owned, listeners));
+    let ready: Vec<&Probe> = probes.iter().filter(|probe| probe.ready()).collect();
+    match ready.as_slice() {
+        [] => Ok(Discovery::Pending(probes)),
+        [chosen] => target(chosen).map(Discovery::Found),
         _ => {
-            let ready: Vec<&Probe> = probes.iter().filter(|probe| probe.ready()).collect();
-            match ready.len() {
-                0 => return Ok(Discovery::Pending(probes)),
-                1 => ready[0],
-                _ => {
-                    let addresses: Vec<&str> =
-                        ready.iter().map(|probe| probe.address.as_str()).collect();
-                    return Err(format!(
-                        "multiple child HTTP listeners found: {addresses:?}; select one with --target"
-                    ));
-                }
-            }
+            let addresses: Vec<&str> = ready.iter().map(|probe| probe.address.as_str()).collect();
+            Err(format!(
+                "multiple child HTTP listeners found: {addresses:?}; select one with --target"
+            ))
         }
+    }
+}
+
+/// The URL of a probed listener.
+pub fn target(probe: &Probe) -> Result<TargetUrl, String> {
+    let (host, port) = split_host_port(&probe.address)?;
+    let port =
+        u16::try_from(port).map_err(|_| format!("invalid listener port {:?}", probe.address))?;
+    Ok(TargetUrl { host, port })
+}
+
+/// Addresses of the listeners whose processes have the fewest owned
+/// ancestors. Depth counts owned ancestors, so it is defined for process
+/// group members that are not descendants of the root.
+fn shallowest(owned: &[OwnedProcess], listeners: Vec<LoopbackListener>) -> Vec<String> {
+    let parents: HashMap<u32, u32> = owned
+        .iter()
+        .map(|process| (process.pid, process.ppid))
+        .collect();
+    let depth = |pid: u32| {
+        let mut depth = 0usize;
+        let mut current = pid;
+        // Bounded by the owned set, so a pid reuse cycle cannot loop forever.
+        while let Some(&parent) = parents.get(&current) {
+            if parent == current || !parents.contains_key(&parent) || depth >= parents.len() {
+                break;
+            }
+            depth += 1;
+            current = parent;
+        }
+        depth
     };
-    let (host, port) = split_host_port(&chosen.address)?;
-    Ok(Discovery::Found(TargetUrl {
-        host,
-        port: port as u16,
-    }))
+    let depths: Vec<(usize, String)> = listeners
+        .into_iter()
+        .map(|listener| (depth(listener.pid), listener.address))
+        .collect();
+    let Some(minimum) = depths.iter().map(|(depth, _)| *depth).min() else {
+        return Vec::new();
+    };
+    depths
+        .into_iter()
+        .filter(|(depth, _)| *depth == minimum)
+        .map(|(_, address)| address)
+        .collect()
 }
 
 pub fn required_tools_missing() -> Option<&'static str> {

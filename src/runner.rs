@@ -394,15 +394,18 @@ impl Run<'_> {
                 Err(error) => return Err(failed(error)),
             };
             if Instant::now() >= self.deadline {
-                if !unready.is_empty() {
-                    return Err(failed(format!(
+                return match unready.as_slice() {
+                    // A server that answers `/` with neither 2xx nor 3xx, such
+                    // as an API: chosen once nothing better came by the deadline.
+                    [sole] => discovery::target(sole).map_err(failed),
+                    [] => Err(failed(
+                        "no loopback HTTP listener found before timeout; bind to localhost or select --target",
+                    )),
+                    _ => Err(failed(format!(
                         "multiple child HTTP listeners found but none answered GET / with 2xx or 3xx before timeout: {}; select one with --target",
                         discovery::describe(&unready)
-                    )));
-                }
-                return Err(failed(
-                    "no unique loopback HTTP listener found before timeout; bind to localhost or select --target",
-                ));
+                    ))),
+                };
             }
             self.events.wait(Some(POLL_INTERVAL));
         }

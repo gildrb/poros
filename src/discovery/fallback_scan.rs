@@ -1,5 +1,5 @@
-use super::{Listener, ProcessInfo};
-use std::collections::BTreeSet;
+use super::{Listener, LoopbackListener, OwnedProcess, ProcessInfo};
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
 const INSPECT_TIMEOUT: Duration = Duration::from_secs(2);
@@ -114,28 +114,37 @@ pub fn listen_signature() -> Result<String, String> {
 
 /// Non-Linux fallback: `ps` for process ownership and `lsof` for sockets,
 /// mirroring the original Go implementation's tooling contract.
-pub fn owned_processes(root_pid: u32) -> Vec<u32> {
+pub fn owned_processes(root_pid: u32) -> Vec<OwnedProcess> {
     let output = match capture(&["ps", "-axo", "pid=,ppid=,pgid="]) {
         Ok(output) => output,
         Err(_) => return Vec::new(),
     };
-    let mut owned: BTreeSet<u32> = BTreeSet::new();
+    let mut owned: BTreeSet<(u32, u32)> = BTreeSet::new();
     for line in output.lines() {
         let fields = line.split_whitespace().collect::<Vec<_>>();
         if fields.len() < 3 {
             continue;
         }
-        let (Ok(pid), Ok(pgid)) = (fields[0].parse::<u32>(), fields[2].parse::<u32>()) else {
+        let (Ok(pid), Ok(ppid), Ok(pgid)) = (
+            fields[0].parse::<u32>(),
+            fields[1].parse::<u32>(),
+            fields[2].parse::<u32>(),
+        ) else {
             continue;
         };
         if pgid == root_pid {
-            owned.insert(pid);
+            owned.insert((pid, ppid));
         }
     }
-    owned.into_iter().collect()
+    owned
+        .into_iter()
+        .map(|(pid, ppid)| OwnedProcess { pid, ppid })
+        .collect()
 }
 
-pub fn loopback_listeners(pids: &[u32]) -> Result<Vec<String>, String> {
+/// Listening loopback sockets held by the owned processes, with the pid
+/// holding each.
+pub fn loopback_listeners(pids: &[u32]) -> Result<Vec<LoopbackListener>, String> {
     if pids.is_empty() {
         return Ok(Vec::new());
     }
@@ -152,14 +161,19 @@ pub fn loopback_listeners(pids: &[u32]) -> Result<Vec<String>, String> {
         pid_list.as_str(),
         "-iTCP",
         "-sTCP:LISTEN",
-        "-Fn",
+        "-Fpn",
     ];
     // lsof exits 1 when no sockets match; `capture` keeps its output anyway.
     let output = capture(&arguments)?;
     arguments.clear();
-    let mut addresses: BTreeSet<String> = BTreeSet::new();
+    let mut listeners: BTreeMap<String, u32> = BTreeMap::new();
+    let mut pid: Option<u32> = None;
     for line in output.lines() {
-        let Some(address) = line.strip_prefix('n') else {
+        if let Some(value) = line.strip_prefix('p') {
+            pid = value.parse().ok();
+            continue;
+        }
+        let (Some(address), Some(pid)) = (line.strip_prefix('n'), pid) else {
             continue;
         };
         if let Some((host, port)) = address.rsplit_once(':') {
@@ -180,10 +194,13 @@ pub fn loopback_listeners(pids: &[u32]) -> Result<Vec<String>, String> {
             } else {
                 continue;
             };
-            addresses.insert(normalized);
+            listeners.entry(normalized).or_insert(pid);
         }
     }
-    Ok(addresses.into_iter().collect())
+    Ok(listeners
+        .into_iter()
+        .map(|(address, pid)| LoopbackListener { address, pid })
+        .collect())
 }
 
 fn is_loopback_host(host: &str) -> bool {
