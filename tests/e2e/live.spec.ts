@@ -3,10 +3,10 @@ import { execFileSync } from 'node:child_process';
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-const remote = process.env.POROS_TEST_SSH;
-const root = process.env.POROS_TEST_ROOT;
-if (!process.env.POROS_TEST_URL || !root) {
-  throw new Error('Set POROS_TEST_URL and POROS_TEST_ROOT; optionally POROS_TEST_SSH.');
+const remote = process.env.PORTHMEUS_TEST_SSH;
+const root = process.env.PORTHMEUS_TEST_ROOT;
+if (!process.env.PORTHMEUS_TEST_URL || !root) {
+  throw new Error('Set PORTHMEUS_TEST_URL and PORTHMEUS_TEST_ROOT; optionally PORTHMEUS_TEST_SSH.');
 }
 const source = join(root, 'message.ts');
 function writeMessage(value: string) {
@@ -21,23 +21,23 @@ function writeMessage(value: string) {
 }
 
 test('private HTTPS loads and Vite updates without reloading', async ({ page }) => {
-  writeMessage('poros-before');
+  writeMessage('porthmeus-before');
   const errors: string[] = [];
   page.on('pageerror', error => errors.push(error.message));
   const socket = page.waitForEvent('websocket');
   await page.goto('/');
-  await expect(page.locator('#app')).toHaveText('poros-before');
+  await expect(page.locator('#app')).toHaveText('porthmeus-before');
   const websocket = await socket;
   expect(websocket.url()).toMatch(/^wss:/);
-  expect(new URL(websocket.url()).host).toBe(new URL(process.env.POROS_TEST_URL!).host);
+  expect(new URL(websocket.url()).host).toBe(new URL(process.env.PORTHMEUS_TEST_URL!).host);
   expect(await page.evaluate(() => window.isSecureContext)).toBe(true);
-  await page.evaluate(() => { (window as any).__porosDocument = 'retained'; });
+  await page.evaluate(() => { (window as any).__porthmeusDocument = 'retained'; });
   try {
-    writeMessage('poros-after');
-    await expect(page.locator('#app')).toHaveText('poros-after', { timeout: 15_000 });
-    expect(await page.evaluate(() => (window as any).__porosDocument)).toBe('retained');
+    writeMessage('porthmeus-after');
+    await expect(page.locator('#app')).toHaveText('porthmeus-after', { timeout: 15_000 });
+    expect(await page.evaluate(() => (window as any).__porthmeusDocument)).toBe('retained');
     expect(errors).toEqual([]);
   } finally {
-    writeMessage('poros-before');
+    writeMessage('porthmeus-before');
   }
 });

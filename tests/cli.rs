@@ -1,4 +1,4 @@
-use poros::cli::{parse_config, usage_text, ParseOutcome};
+use porthmeus::cli::{parse_config, usage_text, ParseOutcome};
 
 fn args(items: &[&str]) -> Vec<String> {
     items.iter().map(|item| item.to_string()).collect()
@@ -111,5 +111,5 @@ fn target_rejects_non_loopback_and_decorations() {
 
 #[test]
 fn prints_usage() {
-    assert!(usage_text().starts_with("Usage: poros [options] command [args ...]"));
+    assert!(usage_text().starts_with("Usage: porthmeus [options] command [args ...]"));
 }

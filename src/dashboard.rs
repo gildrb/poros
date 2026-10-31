@@ -1,4 +1,4 @@
-//! `poros dashboard`: every listening TCP server this user can see, with its
+//! `porthmeus dashboard`: every listening TCP server this user can see, with its
 //! Tailscale HTTPS URL when one is served, and a key to stop it.
 
 use crate::discovery::{self, Listener, ProcessInfo};
@@ -15,7 +15,7 @@ const FULL_SCAN_INTERVAL: Duration = Duration::from_secs(30);
 /// Re-scan shortly after a stop so the row disappears promptly.
 const AFTER_STOP_REFRESH: Duration = Duration::from_millis(400);
 
-/// One stoppable unit: a Poros session (with its dev server's ports) or a
+/// One stoppable unit: a Porthmeus session (with its dev server's ports) or a
 /// standalone listening process.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Row {
@@ -24,7 +24,7 @@ struct Row {
     /// its own group, so a parent shell is never hit.
     group: bool,
     /// A process that Tailscale Serve proxies to and whose descendants
-    /// listen, i.e. a Poros session. It stops its own tree on SIGTERM.
+    /// listen, i.e. a Porthmeus session. It stops its own tree on SIGTERM.
     session: bool,
     command: String,
     /// Working directory, `~`-relative; empty until `State::refresh` fills it.
@@ -78,7 +78,7 @@ pub fn run() -> i32 {
         return match print_table(&mut stdout, &state) {
             Ok(()) => 0,
             Err(error) => {
-                eprintln!("poros: {error}");
+                eprintln!("porthmeus: {error}");
                 1
             }
         };
@@ -86,14 +86,14 @@ pub fn run() -> i32 {
     let events = match Events::install(&[libc::SIGWINCH]) {
         Ok(events) => events,
         Err(error) => {
-            eprintln!("poros: {error}");
+            eprintln!("porthmeus: {error}");
             return 1;
         }
     };
     let terminal = match terminal::Raw::enter() {
         Ok(terminal) => terminal,
         Err(error) => {
-            eprintln!("poros: {error}");
+            eprintln!("porthmeus: {error}");
             return 1;
         }
     };
@@ -102,7 +102,7 @@ pub fn run() -> i32 {
     match outcome {
         Ok(()) => 0,
         Err(error) => {
-            eprintln!("poros: {error}");
+            eprintln!("porthmeus: {error}");
             1
         }
     }
@@ -309,7 +309,7 @@ impl State {
                 let Some(row) = self.rows.get(self.selected) else {
                     return Action::None;
                 };
-                // A Poros session escalates to SIGKILL for its own children
+                // A Porthmeus session escalates to SIGKILL for its own children
                 // and removes its Serve route; killing it outright would
                 // orphan both.
                 let kind = if self.stopped.contains(&row.pid) && !row.session {
@@ -410,7 +410,7 @@ fn build_rows(
     let mut rows = Vec::new();
     let mut consumed: BTreeSet<u32> = BTreeSet::new();
     // Sessions first: a served listener whose descendants also listen is a
-    // proxy in front of them (Poros). Show one row for the whole tree.
+    // proxy in front of them (Porthmeus). Show one row for the whole tree.
     let mut served: Vec<u32> = ports_by_pid
         .keys()
         .copied()
@@ -658,7 +658,7 @@ fn render(stdout: &mut dyn Write, state: &mut State) -> std::io::Result<()> {
     let columns = columns(&state.rows);
     let count = state.rows.len();
     let title = format!(
-        "poros dashboard: {count} listening server{}",
+        "porthmeus dashboard: {count} listening server{}",
         if count == 1 { "" } else { "s" }
     );
     let mut frame = String::from("\x1b[H");

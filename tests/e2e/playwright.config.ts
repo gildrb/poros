@@ -10,7 +10,7 @@ export default defineConfig({
   ],
   timeout: 45_000,
   use: {
-    baseURL: process.env.POROS_TEST_URL,
+    baseURL: process.env.PORTHMEUS_TEST_URL,
     launchOptions: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH
       ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH }
       : undefined,

@@ -32,7 +32,7 @@ struct SelfStatus {
     capabilities: Option<Vec<String>>,
 }
 
-/// How Poros talks to Tailscale: tailscaled's LocalAPI socket when present,
+/// How Porthmeus talks to Tailscale: tailscaled's LocalAPI socket when present,
 /// otherwise (macOS GUI app, or an explicitly chosen CLI) the `tailscale` CLI.
 pub enum Tailscale {
     Local(LocalApi),

@@ -236,7 +236,7 @@ fn handle_connection(mut stream: TcpStream, shared: &Shared) {
         }
     };
     if !host_matches(&head, &shared.authority) {
-        let _ = write_simple_response(&mut stream, 403, "Host is not this Poros route");
+        let _ = write_simple_response(&mut stream, 403, "Host is not this Porthmeus route");
         return;
     }
     if let Some(origin) = head.header("Origin") {
@@ -503,7 +503,7 @@ fn relay_exact(client: &mut TcpStream, backend: &mut TcpStream, length: u64) -> 
     Ok(())
 }
 
-/// Hop-by-hop headers plus the ones Poros writes itself.
+/// Hop-by-hop headers plus the ones Porthmeus writes itself.
 fn is_replaced_header(name: &[u8]) -> bool {
     const NAMES: [&[u8]; 9] = [
         b"host",
@@ -542,7 +542,7 @@ fn build_forwarded_request(head: &RequestHead, content_length: u64, shared: &Sha
     }
     let _ = write!(
         request,
-        "X-Forwarded-Proto: https\r\nX-Forwarded-Host: {}\r\nX-Forwarded-For: 127.0.0.1\r\nVia: 1.0 poros\r\nConnection: close\r\n\r\n",
+        "X-Forwarded-Proto: https\r\nX-Forwarded-Host: {}\r\nX-Forwarded-For: 127.0.0.1\r\nVia: 1.0 porthmeus\r\nConnection: close\r\n\r\n",
         shared.authority
     );
     request

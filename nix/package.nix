@@ -1,29 +1,29 @@
 {
   lib,
   buildRustPackage,
-  version ? "0.1.0",
 }:
 
 buildRustPackage {
-  pname = "poros";
-  inherit version;
+  pname = "porthmeus";
+  # One version: Cargo.toml's, which the binary prints and the release tag carries.
+  inherit ((lib.importTOML ../Cargo.toml).package) version;
 
   src = lib.cleanSource ../.;
 
   cargoLock.lockFile = ../Cargo.lock;
 
-  # build.rs reads this at build time and embeds it as POROS_VERSION.
-  env = {
-    POROS_VERSION = version;
-  };
+  # `p` is the short command, as in the release archives.
+  postInstall = ''
+    ln -s porthmeus "$out/bin/p"
+  '';
 
-  # Nothing is wrapped: Poros talks to tailscaled's LocalAPI socket, and only
+  # Nothing is wrapped: Porthmeus talks to tailscaled's LocalAPI socket, and only
   # falls back to a `tailscale` CLI on PATH where no socket exists.
   meta = {
     description = "Expose local development servers privately over Tailscale";
-    homepage = "https://github.com/gildrb/poros";
+    homepage = "https://porthmeus.com";
     license = lib.licenses.mit;
-    mainProgram = "poros";
+    mainProgram = "porthmeus";
     platforms = lib.platforms.unix;
   };
 }

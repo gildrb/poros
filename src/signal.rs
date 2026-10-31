@@ -22,7 +22,7 @@ pub fn last_signal() -> i32 {
 }
 
 /// Self-pipe woken by signal handlers. The owning thread sleeps in poll(2)
-/// with no periodic wakeups, so an idle Poros costs no CPU.
+/// with no periodic wakeups, so an idle Porthmeus costs no CPU.
 pub struct Events {
     read_fd: libc::c_int,
 }

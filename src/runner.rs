@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 
 const TERMINATE_GRACE: Duration = Duration::from_secs(5);
 /// Startup-only cadence for listener discovery and CLI readiness checks.
-/// Once the URL is printed, Poros sleeps until a signal, child exit, or
+/// Once the URL is printed, Porthmeus sleeps until a signal, child exit, or
 /// connection arrives.
 const POLL_INTERVAL: Duration = Duration::from_millis(150);
 const MAX_SERVE_ATTEMPTS: usize = 4;
@@ -25,7 +25,7 @@ const MAX_SERVE_ATTEMPTS: usize = 4;
 struct ChildProcess {
     process: Child,
     pid: u32,
-    /// The group was made the terminal's foreground group; Poros takes the
+    /// The group was made the terminal's foreground group; Porthmeus takes the
     /// terminal back once the command is gone.
     terminal: bool,
 }
@@ -104,7 +104,7 @@ fn unlinked_temp_file() -> Result<File, String> {
         .map_or(0, |elapsed| elapsed.subsec_nanos());
     for attempt in 0..16u32 {
         let path = directory.join(format!(
-            "poros-serve-{}-{stamp}-{attempt}",
+            "porthmeus-serve-{}-{stamp}-{attempt}",
             std::process::id()
         ));
         match std::fs::OpenOptions::new()
@@ -192,7 +192,7 @@ pub fn run(args: Vec<String>) -> i32 {
         Ok(ParseOutcome::Config(config)) => run_config(config),
         Ok(ParseOutcome::Dashboard) => crate::dashboard::run(),
         Err(error) => {
-            let _ = writeln!(stderr, "poros: {error}");
+            let _ = writeln!(stderr, "porthmeus: {error}");
             2
         }
     }
@@ -225,7 +225,7 @@ fn run_config(c: Config) -> i32 {
     let events = match Events::install(&[]) {
         Ok(events) => events,
         Err(error) => {
-            let _ = writeln!(stderr, "poros: {error}");
+            let _ = writeln!(stderr, "porthmeus: {error}");
             return 1;
         }
     };
@@ -236,7 +236,7 @@ fn run_config(c: Config) -> i32 {
         Err(failure) => {
             if let Some(message) = failure.message {
                 if crate::signal::last_signal() == 0 {
-                    let _ = writeln!(stderr, "poros: {message}");
+                    let _ = writeln!(stderr, "porthmeus: {message}");
                 }
             }
             if failure.code == 0 {
@@ -518,7 +518,7 @@ fn failed(message: impl Into<String>) -> Exit {
 fn announce(stdout: &mut dyn Write, authority: &str, target: &TargetUrl) -> Result<(), Failure> {
     writeln!(
         stdout,
-        "Poros URL: https://{authority}/\nLocal target: {}",
+        "Porthmeus URL: https://{authority}/\nLocal target: {}",
         target.url()
     )
     .and_then(|()| stdout.flush())
@@ -561,7 +561,7 @@ fn spawn_child(command: &[String]) -> Result<ChildProcess, String> {
     };
     unsafe {
         builder.pre_exec(move || {
-            // The child becomes its own process group leader so Poros can
+            // The child becomes its own process group leader so Porthmeus can
             // signal the whole tree without touching unrelated processes.
             if libc::setpgid(0, 0) != 0 {
                 return Err(std::io::Error::last_os_error());

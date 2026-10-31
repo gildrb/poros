@@ -1,4 +1,4 @@
-use poros::tailscale::{parse_node, parse_serve_config};
+use porthmeus::tailscale::{parse_node, parse_serve_config};
 
 #[test]
 fn parses_running_node() {

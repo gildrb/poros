@@ -1,4 +1,4 @@
-//! Minimal client for tailscaled's LocalAPI over its Unix socket. Poros holds
+//! Minimal client for tailscaled's LocalAPI over its Unix socket. Porthmeus holds
 //! the foreground Serve session itself instead of keeping a `tailscale serve`
 //! process (a ~28 MB Go runtime) alive for the whole run.
 
@@ -11,7 +11,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 /// Where tailscaled listens: Linux distributions, then the open-source
-/// macOS daemon. The macOS GUI app has no socket; Poros uses its CLI.
+/// macOS daemon. The macOS GUI app has no socket; Porthmeus uses its CLI.
 const SOCKETS: [&str; 3] = [
     "/run/tailscale/tailscaled.sock",
     "/var/run/tailscale/tailscaled.sock",
@@ -35,7 +35,7 @@ struct Response {
 }
 
 /// A foreground Serve route. tailscaled deletes it when this connection
-/// closes, including when Poros is killed outright.
+/// closes, including when Porthmeus is killed outright.
 pub struct Session {
     stream: UnixStream,
 }

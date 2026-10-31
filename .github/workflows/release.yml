@@ -1,51 +1,92 @@
 name: Release
 
+# Tag porthmeus-v<version> (the version in Cargo.toml) to release. The release
+# stays a draft until every archive, SHA256SUMS and install.sh are attached, so
+# releases/latest never points at a release with missing assets.
 on:
   push:
-    tags: ["v*"]
+    tags: ["porthmeus-v*"]
 
 permissions:
   contents: write
 
+env:
+  GH_TOKEN: ${{ github.token }}
+
 jobs:
   prepare:
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     steps:
-      - uses: softprops/action-gh-release@v2
-        with:
-          generate_release_notes: true
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - id: version
+        run: |
+          version="${GITHUB_REF_NAME#porthmeus-v}"
+          cargo_version="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)"
+          if [ "$version" != "$cargo_version" ]; then
+            echo "tag $GITHUB_REF_NAME does not match Cargo.toml version $cargo_version" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - run: |
+          gh release create "$GITHUB_REF_NAME" --draft --verify-tag --generate-notes \
+            --title "Porthmeus v${{ steps.version.outputs.version }}"
 
   build:
     needs: prepare
     strategy:
-      fail-fast: false
+      fail-fast: true
       matrix:
         include:
           - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
+            platform: linux-x64
           - os: ubuntu-24.04-arm
-            target: aarch64-unknown-linux-gnu
+            platform: linux-arm64
           - os: macos-latest
-            target: aarch64-apple-darwin
+            platform: darwin-arm64
           # macos-13 was retired; this is Actions' last x86_64 macOS image.
           - os: macos-15-intel
-            target: x86_64-apple-darwin
+            platform: darwin-x64
     runs-on: ${{ matrix.os }}
     env:
-      GH_TOKEN: ${{ github.token }}
-      POROS_VERSION: ${{ github.ref_name }}
+      VERSION: ${{ needs.prepare.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo build --release
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - run: cargo build --release --locked
+      - name: Package
+        run: |
+          stage="$RUNNER_TEMP/stage"
+          mkdir -p "$stage"
+          cp target/release/porthmeus "$stage/"
+          ln -s porthmeus "$stage/p"
+          reported="$("$stage/porthmeus" --version)"
+          if [ "$reported" != "$VERSION" ]; then
+            echo "binary reports $reported, expected $VERSION" >&2
+            exit 1
+          fi
+          archive="porthmeus-${VERSION}-${{ matrix.platform }}.tar.gz"
+          tar -czf "$archive" -C "$stage" porthmeus p
+          gh release upload "$GITHUB_REF_NAME" "$archive" --repo "$GITHUB_REPOSITORY" --clobber
+
+  publish:
+    needs: [prepare, build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: |
-          mkdir -p dist
-          cp target/release/poros dist/
-          tar -czf "poros-${{ matrix.target }}.tar.gz" -C dist poros
-          sha256sum "poros-${{ matrix.target }}.tar.gz" > "poros-${{ matrix.target }}.tar.gz.sha256"
-      - run: |
-          gh release upload "$GITHUB_REF_NAME" \
-            "poros-${{ matrix.target }}.tar.gz" \
-            "poros-${{ matrix.target }}.tar.gz.sha256" \
+          mkdir dist
+          gh release download "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+            --pattern 'porthmeus-*.tar.gz' --dir dist
+          count="$(find dist -name 'porthmeus-*.tar.gz' | wc -l)"
+          if [ "$count" -ne 4 ]; then
+            echo "expected 4 archives, found $count" >&2
+            exit 1
+          fi
+          (cd dist && sha256sum porthmeus-*.tar.gz > SHA256SUMS)
+          cp install.sh dist/
+          gh release upload "$GITHUB_REF_NAME" dist/SHA256SUMS dist/install.sh \
             --repo "$GITHUB_REPOSITORY" --clobber
+          gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft=false --latest

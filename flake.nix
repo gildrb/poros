@@ -13,7 +13,6 @@
         "x86_64-linux"
       ];
       forAllSystems = nixpkgs.lib.genAttrs systems;
-      version = self.shortRev or self.dirtyShortRev or "dev";
       packageFor =
         system:
         let
@@ -21,19 +20,18 @@
         in
         pkgs.callPackage ./nix/package.nix {
           buildRustPackage = pkgs.rustPlatform.buildRustPackage;
-          inherit version;
         };
     in
     {
       packages = forAllSystems (system: {
         default = packageFor system;
-        poros = packageFor system;
+        porthmeus = packageFor system;
       });
 
       apps = forAllSystems (system: {
         default = {
           type = "app";
-          program = "${self.packages.${system}.default}/bin/poros";
+          program = "${self.packages.${system}.default}/bin/porthmeus";
           meta.description = "Expose a localhost development server over Tailscale";
         };
       });
@@ -45,7 +43,9 @@
       formatter = forAllSystems (system: nixpkgs.legacyPackages.${system}.nixfmt-tree);
 
       overlays.default = final: _previous: {
-        poros = final.callPackage ./nix/package.nix { inherit version; };
+        porthmeus = final.callPackage ./nix/package.nix {
+          buildRustPackage = final.rustPlatform.buildRustPackage;
+        };
       };
 
       nixosModules.default =

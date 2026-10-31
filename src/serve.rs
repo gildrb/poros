@@ -14,5 +14,5 @@ pub fn serve_command(
     command
 }
 
-/// HTTPS ports Tailscale reserves for Funnel; Poros never touches them.
+/// HTTPS ports Tailscale reserves for Funnel; Porthmeus never touches them.
 pub const RESERVED_FUNNEL_PORTS: [u16; 3] = [443, 8443, 10000];
